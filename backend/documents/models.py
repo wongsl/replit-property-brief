@@ -1,0 +1,98 @@
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+
+
+class User(AbstractUser):
+    ROLE_CHOICES = [('admin', 'Admin'), ('user', 'User'), ('viewer', 'Viewer')]
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='user')
+    team = models.ForeignKey('Team', on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
+
+    class Meta:
+        db_table = 'users'
+
+
+class Team(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        db_table = 'teams'
+
+
+class Folder(models.Model):
+    name = models.CharField(max_length=255)
+    parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='children')
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='folders')
+    team = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True, related_name='folders')
+    position = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'folders'
+        ordering = ['position', 'name']
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def full_path(self):
+        parts = [self.name]
+        current = self.parent
+        while current:
+            parts.insert(0, current.name)
+            current = current.parent
+        return ' / '.join(parts)
+
+
+class Tag(models.Model):
+    name = models.CharField(max_length=50, unique=True)
+
+    class Meta:
+        db_table = 'tags'
+
+    def __str__(self):
+        return self.name
+
+
+class Document(models.Model):
+    TYPE_CHOICES = [('pdf', 'PDF'), ('image', 'Image'), ('code', 'Code'), ('sheet', 'Spreadsheet'), ('other', 'Other')]
+    STATUS_CHOICES = [('uploading', 'Uploading'), ('processing', 'Processing'), ('synced', 'Synced'), ('error', 'Error')]
+
+    name = models.CharField(max_length=255)
+    file = models.FileField(upload_to='documents/', null=True, blank=True)
+    storage_path = models.CharField(max_length=500, null=True, blank=True)
+    file_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='other')
+    file_size = models.CharField(max_length=20, default='0 KB')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='synced')
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='documents')
+    team = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True, related_name='documents')
+    folder = models.ForeignKey(Folder, on_delete=models.SET_NULL, null=True, blank=True, related_name='documents')
+    tags = models.ManyToManyField(Tag, blank=True, related_name='documents')
+    position = models.IntegerField(default=0)
+    ai_score = models.IntegerField(null=True, blank=True)
+    ai_analysis = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'documents'
+        ordering = ['position', '-created_at']
+
+    def __str__(self):
+        return self.name
+
+
+class DocumentPermission(models.Model):
+    PERMISSION_CHOICES = [('view', 'View'), ('edit', 'Edit'), ('admin', 'Admin')]
+
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='permissions')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='document_permissions', null=True, blank=True)
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='document_permissions', null=True, blank=True)
+    permission = models.CharField(max_length=10, choices=PERMISSION_CHOICES, default='view')
+
+    class Meta:
+        db_table = 'document_permissions'
+        unique_together = [('document', 'user'), ('document', 'team')]
