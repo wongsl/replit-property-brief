@@ -260,11 +260,14 @@ export default function DashboardPage() {
 
         setUploadProgress(30);
 
-        await fetch(uploadURL, {
+        const s3Res = await fetch(uploadURL, {
           method: 'PUT',
           body: file,
           headers: { 'Content-Type': file.type || 'application/octet-stream' },
         });
+        if (!s3Res.ok) {
+          throw new Error(`S3 upload failed: ${s3Res.status} ${s3Res.statusText}`);
+        }
 
         setUploadProgress(70);
 

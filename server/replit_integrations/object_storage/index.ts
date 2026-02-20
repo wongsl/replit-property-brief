@@ -1,8 +1,6 @@
-export {
-  ObjectStorageService,
-  ObjectNotFoundError,
-  objectStorageClient,
-} from "./objectStorage";
+export { ObjectStorageService, ObjectNotFoundError } from "./objectStorage";
+export { s3Client } from "./s3Client";
+export type { S3FileRef } from "./s3Client";
 
 export type {
   ObjectAclPolicy,

@@ -1,59 +1,63 @@
 import type { Express } from "express";
+import { eq } from "drizzle-orm";
 import { ObjectStorageService, ObjectNotFoundError } from "./objectStorage";
+import { localStorageService } from "./localStorage";
+import multer from "multer";
+import { db } from "../../db";
+import { uploads } from "@shared/schema";
 
-/**
- * Register object storage routes for file uploads.
- *
- * This provides example routes for the presigned URL upload flow:
- * 1. POST /api/uploads/request-url - Get a presigned URL for uploading
- * 2. The client then uploads directly to the presigned URL
- *
- * IMPORTANT: These are example routes. Customize based on your use case:
- * - Add authentication middleware for protected uploads
- * - Add file metadata storage (save to database after upload)
- * - Add ACL policies for access control
- */
 export function registerObjectStorageRoutes(app: Express): void {
   const objectStorageService = new ObjectStorageService();
+  const upload = multer({ storage: multer.memoryStorage() });
 
   /**
    * Request a presigned URL for file upload.
    *
    * Request body (JSON):
    * {
-   *   "name": "filename.jpg",
+   *   "name": "filename.pdf",
    *   "size": 12345,
-   *   "contentType": "image/jpeg"
+   *   "contentType": "application/pdf"
    * }
    *
    * Response:
    * {
-   *   "uploadURL": "https://storage.googleapis.com/...",
-   *   "objectPath": "/objects/uploads/uuid"
+   *   "uploadURL": "https://bucket.s3.region.amazonaws.com/..." (or /api/local-upload/uuid in dev),
+   *   "objectPath": "/objects/uploads/uuid",
+   *   "uploadId": "uuid"
    * }
    *
-   * IMPORTANT: The client should NOT send the file to this endpoint.
-   * Send JSON metadata only, then upload the file directly to uploadURL.
+   * Client should PUT the file body directly to uploadURL, then store objectPath in the document record.
    */
   app.post("/api/uploads/request-url", async (req, res) => {
     try {
       const { name, size, contentType } = req.body;
 
       if (!name) {
-        return res.status(400).json({
-          error: "Missing required field: name",
-        });
+        return res.status(400).json({ error: "Missing required field: name" });
       }
 
-      const uploadURL = await objectStorageService.getObjectEntityUploadURL();
+      const { uploadURL, objectPath } = await objectStorageService.getObjectEntityUploadInfo();
 
-      // Extract object path from the presigned URL for later reference
-      const objectPath = objectStorageService.normalizeObjectEntityPath(uploadURL);
+      // Track the upload in the database (non-fatal if DB is not configured)
+      let uploadId: string | undefined;
+      try {
+        const [record] = await db.insert(uploads).values({
+          objectPath,
+          originalName: name,
+          contentType: contentType ?? null,
+          size: size ? Number(size) : null,
+          status: "pending",
+        }).returning();
+        uploadId = record.id;
+      } catch (dbErr) {
+        console.warn("Upload tracking skipped (DB not available):", (dbErr as Error).message);
+      }
 
       res.json({
         uploadURL,
         objectPath,
-        // Echo back the metadata for client convenience
+        uploadId,
         metadata: { name, size, contentType },
       });
     } catch (error) {
@@ -63,12 +67,39 @@ export function registerObjectStorageRoutes(app: Express): void {
   });
 
   /**
+   * Local storage PUT handler — mirrors the S3 presigned PUT flow for development.
+   * Accepts the raw file body and saves it to local-storage/{fileId}.
+   * Only active when USE_LOCAL_STORAGE=true.
+   */
+  app.put("/api/local-upload/:fileId", async (req, res) => {
+    const fileId = String(req.params.fileId);
+    const chunks: Buffer[] = [];
+
+    await new Promise<void>((resolve, reject) => {
+      req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on("end", resolve);
+      req.on("error", reject);
+    });
+
+    const buffer = Buffer.concat(chunks);
+    localStorageService.saveFileRaw(fileId, buffer);
+
+    // Mark as uploaded in DB (non-fatal if DB is not configured)
+    try {
+      await db.update(uploads)
+        .set({ status: "uploaded" })
+        .where(eq(uploads.objectPath, `/objects/${fileId}`));
+    } catch (dbErr) {
+      console.warn("Upload status update skipped (DB not available):", (dbErr as Error).message);
+    }
+
+    res.status(200).send();
+  });
+
+  /**
    * Serve uploaded objects.
    *
    * GET /objects/:objectPath(*)
-   *
-   * This serves files from object storage. For public files, no auth needed.
-   * For protected files, add authentication middleware and ACL checks.
    */
   app.get("/objects/{*objectPath}", async (req, res) => {
     try {
@@ -82,5 +113,51 @@ export function registerObjectStorageRoutes(app: Express): void {
       return res.status(500).json({ error: "Failed to serve object" });
     }
   });
-}
 
+  /**
+   * Local file upload endpoint — multipart POST fallback (kept for compatibility).
+   *
+   * POST /api/local-upload/:fileId
+   */
+  app.post("/api/local-upload/:fileId", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No file provided" });
+      }
+
+      const fileId = String(req.params.fileId);
+      const fileName = req.file.originalname;
+      const buffer = req.file.buffer;
+
+      const objectPath = await objectStorageService.saveLocalFile(fileId, fileName, buffer);
+
+      let uploadId: string | undefined;
+      try {
+        const [record] = await db.insert(uploads).values({
+          objectPath,
+          originalName: fileName,
+          contentType: req.file.mimetype,
+          size: req.file.size,
+          status: "uploaded",
+        }).returning();
+        uploadId = record.id;
+      } catch (dbErr) {
+        console.warn("Upload tracking skipped (DB not available):", (dbErr as Error).message);
+      }
+
+      res.json({
+        success: true,
+        objectPath,
+        uploadId,
+        metadata: {
+          name: fileName,
+          size: req.file.size,
+          contentType: req.file.mimetype,
+        },
+      });
+    } catch (error) {
+      console.error("Error uploading file:", error);
+      res.status(500).json({ error: "Failed to upload file" });
+    }
+  });
+}

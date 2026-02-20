@@ -1,7 +1,11 @@
 import type { Express } from "express";
 import OpenAI from "openai";
 import { PDFParse, VerbosityLevel } from "pdf-parse";
+import { Readable } from "stream";
+import * as fs from "fs";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
+import { s3Client, S3FileRef } from "./replit_integrations/object_storage/s3Client";
 import { log } from "./index";
 
 const DOC_TYPES = [
@@ -50,14 +54,25 @@ async function extractTextFromFile(
   objectStorageService: ObjectStorageService
 ): Promise<string> {
   const objectFile = await objectStorageService.getObjectEntityFile(storagePath);
-  const chunks: Buffer[] = [];
-  const stream = objectFile.createReadStream();
 
-  const buffer = await new Promise<Buffer>((resolve, reject) => {
-    stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-    stream.on("end", () => resolve(Buffer.concat(chunks)));
-    stream.on("error", reject);
-  });
+  let buffer: Buffer;
+  if (typeof objectFile === "string") {
+    // Local storage: read from disk
+    buffer = fs.readFileSync(objectFile);
+  } else {
+    // S3: stream the object
+    const response = await s3Client.send(
+      new GetObjectCommand({ Bucket: objectFile.bucketName, Key: objectFile.objectKey })
+    );
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const stream = response.Body as Readable;
+      stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+      stream.on("end", resolve);
+      stream.on("error", reject);
+    });
+    buffer = Buffer.concat(chunks);
+  }
 
   try {
     const parser = new PDFParse({ data: new Uint8Array(buffer), verbosity: VerbosityLevel.ERRORS });
@@ -92,13 +107,18 @@ export function registerAnalyzeRoutes(app: Express): void {
       }
 
       const doc = (await docRes.json()) as any;
-      const storagePath = doc.storage_path;
+      const rawStoragePath = doc.storage_path;
 
-      if (!storagePath) {
+      if (!rawStoragePath) {
         return res.status(400).json({ error: "This document has no uploaded file to analyze. Please re-upload the file first." });
       }
 
       log(`Analyzing document ${docId}: ${doc.name}`, "analyze");
+      log(`Raw storage_path from Django: ${rawStoragePath}`, "analyze");
+
+      // Normalize S3 presigned URLs or bare paths to the internal /objects/... format
+      const storagePath = objectStorageService.normalizeObjectEntityPath(rawStoragePath);
+      log(`Resolved storage path: ${storagePath}`, "analyze");
 
       let documentText: string;
       try {
