@@ -4,10 +4,10 @@ from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password, check_password
 from django.db.models import Count
-from .models import Team, Folder, Tag, Document, DocumentPermission
+from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest
 from .serializers import (
     UserSerializer, TeamSerializer, FolderSerializer, TagSerializer,
-    DocumentSerializer, DocumentPermissionSerializer
+    DocumentSerializer, DocumentPermissionSerializer, TeamJoinRequestSerializer
 )
 from .cache_utils import (
     get_cached, set_cached, _docs_key, _folders_key, _teams_key,
@@ -25,18 +25,24 @@ User = get_user_model()
 def register(request):
     username = request.data.get('username', '').strip()
     password = request.data.get('password', '').strip()
+    email = request.data.get('email', '').strip().lower()
     role = request.data.get('role', 'user')
     team_id = request.data.get('team_id')
 
     if not username or not password:
         return Response({'error': 'Username and password required'}, status=400)
+    if not email:
+        return Response({'error': 'Email is required'}, status=400)
 
     if User.objects.filter(username=username).exists():
         return Response({'error': 'Username taken'}, status=400)
+    if User.objects.filter(email=email).exists():
+        return Response({'error': 'An account with this email already exists'}, status=400)
 
     user = User.objects.create(
         username=username,
         password=make_password(password),
+        email=email,
         role=role,
         team_id=team_id,
     )
@@ -83,14 +89,26 @@ def me(request):
     return Response(data)
 
 
-@api_view(['GET'])
-@permission_classes([permissions.AllowAny])
+@api_view(['GET', 'POST'])
+@permission_classes([permissions.IsAuthenticatedOrReadOnly])
 def teams_list(request):
+    if request.method == 'POST':
+        if not request.user.is_authenticated or request.user.role != 'admin':
+            return Response({'error': 'Admin only'}, status=403)
+        name = request.data.get('name', '').strip()
+        if not name:
+            return Response({'error': 'Team name required'}, status=400)
+        if Team.objects.filter(name=name).exists():
+            return Response({'error': 'A team with this name already exists'}, status=400)
+        team = Team.objects.create(name=name)
+        invalidate_teams()
+        return Response(TeamSerializer(team).data, status=201)
+
     key = _teams_key()
     cached = get_cached(key)
     if cached:
         return Response(cached)
-    teams = Team.objects.all()
+    teams = Team.objects.annotate(member_count=Count('members'))
     data = TeamSerializer(teams, many=True).data
     set_cached(key, data, ttl=600)
     return Response(data)
@@ -358,7 +376,7 @@ def admin_update_user(request, user_id):
 
     if 'role' in request.data:
         new_role = request.data['role']
-        if new_role not in ('admin', 'user', 'viewer'):
+        if new_role not in ('admin', 'team_leader', 'user', 'viewer'):
             return Response({'error': 'Invalid role'}, status=400)
         user.role = new_role
     if 'team_id' in request.data:
@@ -404,3 +422,102 @@ def admin_delete_user(request, user_id):
     from django.core.cache import cache
     cache.delete(_admin_users_key())
     return Response({'message': f'User {username} deleted'})
+
+
+# --- Team Join / Leave Views ---
+
+@api_view(['POST'])
+def team_join_request(request):
+    """Any authenticated user can request to join a team."""
+    team_id = request.data.get('team_id')
+    if not team_id:
+        return Response({'error': 'team_id required'}, status=400)
+    if request.user.team_id and request.user.team_id == int(team_id):
+        return Response({'error': 'You are already in this team'}, status=400)
+    try:
+        team = Team.objects.get(pk=team_id)
+    except Team.DoesNotExist:
+        return Response({'error': 'Team not found'}, status=404)
+
+    req, created = TeamJoinRequest.objects.get_or_create(
+        user=request.user, team=team, defaults={'status': 'pending'}
+    )
+    if not created:
+        if req.status == 'pending':
+            return Response({'error': 'You already have a pending request for this team'}, status=400)
+        # Allow re-requesting if previously rejected
+        req.status = 'pending'
+        req.resolved_at = None
+        req.save()
+    return Response(TeamJoinRequestSerializer(req).data, status=201)
+
+
+@api_view(['GET'])
+def team_join_requests_list(request):
+    """Team leaders see pending requests for their team; admins see all."""
+    if request.user.role not in ('admin', 'team_leader'):
+        return Response({'error': 'Team leader or admin only'}, status=403)
+
+    qs = TeamJoinRequest.objects.select_related('user', 'team').filter(status='pending')
+    if request.user.role == 'team_leader':
+        if not request.user.team_id:
+            return Response([])
+        qs = qs.filter(team_id=request.user.team_id)
+    return Response(TeamJoinRequestSerializer(qs, many=True).data)
+
+
+@api_view(['POST'])
+def team_join_request_resolve(request, request_id):
+    """Team leader approves or rejects a join request."""
+    if request.user.role not in ('admin', 'team_leader'):
+        return Response({'error': 'Team leader or admin only'}, status=403)
+
+    action = request.data.get('action')
+    if action not in ('approve', 'reject'):
+        return Response({'error': "action must be 'approve' or 'reject'"}, status=400)
+
+    try:
+        join_req = TeamJoinRequest.objects.select_related('user', 'team').get(pk=request_id)
+    except TeamJoinRequest.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+
+    if request.user.role == 'team_leader' and join_req.team_id != request.user.team_id:
+        return Response({'error': 'Can only manage join requests for your own team'}, status=403)
+
+    from django.utils import timezone
+    join_req.status = 'approved' if action == 'approve' else 'rejected'
+    join_req.resolved_at = timezone.now()
+    join_req.save()
+
+    if action == 'approve':
+        target_user = join_req.user
+        target_user.team = join_req.team
+        target_user.save()
+        invalidate_user(target_user.id)
+        invalidate_docs(target_user.id, getattr(target_user, 'team_id', None))
+
+    return Response(TeamJoinRequestSerializer(join_req).data)
+
+
+@api_view(['POST'])
+def team_leave(request):
+    """Any authenticated user can leave their current team."""
+    if not request.user.team_id:
+        return Response({'error': 'You are not in a team'}, status=400)
+    request.user.team = None
+    request.user.save()
+    invalidate_user(request.user.id)
+    return Response(UserSerializer(request.user).data)
+
+
+@api_view(['GET'])
+def team_members(request, team_id):
+    """List members of a team. Accessible by admins and team leaders of that team."""
+    if request.user.role == 'admin':
+        pass  # admin can view any team's members
+    elif request.user.role == 'team_leader' and request.user.team_id == team_id:
+        pass  # team leader can view their own team
+    else:
+        return Response({'error': 'Not authorized'}, status=403)
+    members = User.objects.filter(team_id=team_id).select_related('team')
+    return Response(UserSerializer(members, many=True).data)

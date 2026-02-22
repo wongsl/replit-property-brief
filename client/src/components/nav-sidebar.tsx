@@ -6,8 +6,7 @@ import {
   Shield,
   LogOut,
   FileText,
-  Menu,
-  X,
+  Users,
   Database
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -72,13 +71,19 @@ function AppSidebar() {
       title: "Dashboard",
       url: "/dashboard",
       icon: LayoutDashboard,
-      roles: ["admin", "user"],
+      roles: ["admin", "team_leader", "user"],
     },
     {
       title: "File Explorer",
       url: "/explorer",
       icon: FileText,
-      roles: ["admin", "user"],
+      roles: ["admin", "team_leader", "user"],
+    },
+    {
+      title: "Teams",
+      url: "/teams",
+      icon: Users,
+      roles: ["admin", "team_leader", "user"],
     },
     {
       title: "Admin Panel",
@@ -125,10 +130,10 @@ function AppSidebar() {
 
         <div className="mt-auto p-4">
            <div className="rounded-xl border bg-card p-4 shadow-sm">
-             <div className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">Current Plan</div>
-             <div className="font-semibold text-sm">{user?.role === 'admin' ? 'Enterprise' : 'Free Tier'}</div>
+             <div className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">Account</div>
+             <div className="font-semibold text-sm capitalize">{user?.role === 'team_leader' ? 'Team Leader' : user?.role === 'admin' ? 'Admin' : 'Member'}</div>
              <div className="text-xs text-muted-foreground mt-1">
-               {user?.role === 'admin' ? 'Unlimited storage' : '5GB Storage limit'}
+               {user?.team_name ? user.team_name : 'No team'}
              </div>
            </div>
         </div>

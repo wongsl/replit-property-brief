@@ -13,6 +13,7 @@ export default function AuthPage() {
   const [, setLocation] = useLocation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
   const [teamId, setTeamId] = useState<number | null>(null);
   const [teams, setTeams] = useState<{id: number, name: string}[]>([]);
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -27,7 +28,7 @@ export default function AuthPage() {
   };
 
   const handleRegister = async (role: "admin" | "user") => {
-    const ok = await register(username, password, role, teamId || undefined);
+    const ok = await register(username, password, email, role, teamId || undefined);
     if (ok) setLocation("/dashboard");
   };
 
@@ -76,6 +77,18 @@ export default function AuthPage() {
 
             {mode === "register" && (
               <>
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    data-testid="input-email"
+                    placeholder="you@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="bg-muted/50"
+                  />
+                </div>
                 <div className="space-y-2">
                   <Label>Select Team</Label>
                   <div className="grid grid-cols-2 gap-2">

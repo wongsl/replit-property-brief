@@ -1,11 +1,13 @@
 from rest_framework import serializers
-from .models import User, Team, Folder, Tag, Document, DocumentPermission
+from .models import User, Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest
 
 
 class TeamSerializer(serializers.ModelSerializer):
+    member_count = serializers.IntegerField(read_only=True, default=0)
+
     class Meta:
         model = Team
-        fields = ['id', 'name']
+        fields = ['id', 'name', 'member_count']
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -13,7 +15,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'role', 'team', 'team_name']
+        fields = ['id', 'username', 'email', 'role', 'team', 'team_name']
 
 
 class TagSerializer(serializers.ModelSerializer):
@@ -70,3 +72,13 @@ class DocumentSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['owner', 'owner_name', 'file_size', 'status']
+
+
+class TeamJoinRequestSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    team_name = serializers.CharField(source='team.name', read_only=True)
+
+    class Meta:
+        model = TeamJoinRequest
+        fields = ['id', 'user', 'username', 'team', 'team_name', 'status', 'requested_at', 'resolved_at']
+        read_only_fields = ['user', 'username', 'team_name', 'status', 'requested_at', 'resolved_at']

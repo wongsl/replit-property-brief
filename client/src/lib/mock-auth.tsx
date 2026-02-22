@@ -1,11 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 
-type UserRole = "admin" | "user" | "viewer";
+type UserRole = "admin" | "team_leader" | "user" | "viewer";
 
 interface User {
   id: number;
   username: string;
+  email: string | null;
   role: UserRole;
   team: number | null;
   team_name: string | null;
@@ -15,8 +16,9 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   login: (username: string, password: string) => Promise<boolean>;
-  register: (username: string, password: string, role: UserRole, teamId?: number) => Promise<boolean>;
+  register: (username: string, password: string, email: string, role: UserRole, teamId?: number) => Promise<boolean>;
   logout: () => void;
+  refreshUser: () => Promise<void>;
   rateLimitRemaining: number;
   decrementRateLimit: () => boolean;
   resetRateLimit: () => void;
@@ -70,10 +72,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const register = async (username: string, password: string, role: UserRole, teamId?: number): Promise<boolean> => {
+  const register = async (username: string, password: string, email: string, role: UserRole, teamId?: number): Promise<boolean> => {
     const res = await apiFetch('/api/auth/register/', {
       method: 'POST',
-      body: JSON.stringify({ username, password, role, team_id: teamId }),
+      body: JSON.stringify({ username, password, email, role, team_id: teamId }),
     });
     if (res.ok) {
       const data = await res.json();
@@ -108,8 +110,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     toast({ title: "Rate limit reset", description: "You can now perform actions again." });
   };
 
+  const refreshUser = async () => {
+    const res = await apiFetch('/api/auth/me/');
+    if (res.ok) {
+      const data = await res.json();
+      setUser(data);
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, rateLimitRemaining, decrementRateLimit, resetRateLimit }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser, rateLimitRemaining, decrementRateLimit, resetRateLimit }}>
       {children}
     </AuthContext.Provider>
   );

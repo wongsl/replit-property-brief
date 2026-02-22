@@ -3,9 +3,10 @@ from django.db import models
 
 
 class User(AbstractUser):
-    ROLE_CHOICES = [('admin', 'Admin'), ('user', 'User'), ('viewer', 'Viewer')]
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='user')
+    ROLE_CHOICES = [('admin', 'Admin'), ('team_leader', 'Team Leader'), ('user', 'User'), ('viewer', 'Viewer')]
+    role = models.CharField(max_length=15, choices=ROLE_CHOICES, default='user')
     team = models.ForeignKey('Team', on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
+    email = models.EmailField(unique=True, null=True, blank=True, default=None)
 
     class Meta:
         db_table = 'users'
@@ -83,6 +84,22 @@ class Document(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class TeamJoinRequest(models.Model):
+    STATUS_CHOICES = [('pending', 'Pending'), ('approved', 'Approved'), ('rejected', 'Rejected')]
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='join_requests')
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='join_requests')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+    requested_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'team_join_requests'
+        unique_together = [('user', 'team')]
+
+    def __str__(self):
+        return f'{self.user.username} → {self.team.name} ({self.status})'
 
 
 class DocumentPermission(models.Model):

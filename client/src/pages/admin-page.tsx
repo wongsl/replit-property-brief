@@ -4,14 +4,16 @@ import { Redirect } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { 
-  Users, Activity, ShieldAlert, Settings, MoreVertical, Trash2
+import {
+  Users, Activity, ShieldAlert, Settings, MoreVertical, Trash2, UserCog
 } from "lucide-react";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
+  DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuSub,
+  DropdownMenuSubContent, DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -31,6 +33,7 @@ async function apiFetch(url: string, options: RequestInit = {}) {
 export default function AdminPage() {
   const { user } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
+  const [teams, setTeams] = useState<any[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -40,7 +43,12 @@ export default function AdminPage() {
     });
   };
 
-  useEffect(() => { loadUsers(); }, []);
+  useEffect(() => {
+    loadUsers();
+    apiFetch('/api/teams/').then(async (res) => {
+      if (res.ok) setTeams(await res.json());
+    });
+  }, []);
 
   if (user?.role !== "admin") {
     return <Redirect to="/dashboard" />;
@@ -52,7 +60,19 @@ export default function AdminPage() {
       body: JSON.stringify({ role }),
     });
     if (res.ok) {
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role } : u));
+      const updated = await res.json();
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: updated.role } : u));
+    }
+  };
+
+  const handleTeamChange = async (userId: number, teamId: number | null) => {
+    const res = await apiFetch(`/api/admin/users/${userId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify({ team_id: teamId }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, team: updated.team, team_name: updated.team_name } : u));
     }
   };
 
@@ -68,6 +88,11 @@ export default function AdminPage() {
     }
     setIsDeleting(false);
     setDeleteTarget(null);
+  };
+
+  const roleLabel = (role: string) => {
+    if (role === 'team_leader') return 'Team Leader';
+    return role.charAt(0).toUpperCase() + role.slice(1);
   };
 
   return (
@@ -123,13 +148,14 @@ export default function AdminPage() {
       <Card>
         <CardHeader>
           <CardTitle>User Management</CardTitle>
-          <CardDescription>Manage roles and permissions for all registered users.</CardDescription>
+          <CardDescription>Manage roles, teams, and permissions for all registered users.</CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>User</TableHead>
+                <TableHead>Email</TableHead>
                 <TableHead>Role</TableHead>
                 <TableHead>Team</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -139,8 +165,9 @@ export default function AdminPage() {
               {users.map((u) => (
                 <TableRow key={u.id} data-testid={`row-user-${u.id}`}>
                   <TableCell className="font-medium">{u.username}</TableCell>
+                  <TableCell className="text-muted-foreground text-sm">{u.email || <span className="italic">—</span>}</TableCell>
                   <TableCell>
-                    <Badge variant="outline" className="capitalize">{u.role}</Badge>
+                    <Badge variant="outline" className="capitalize">{roleLabel(u.role)}</Badge>
                   </TableCell>
                   <TableCell className="text-muted-foreground">{u.team_name || "No team"}</TableCell>
                   <TableCell className="text-right">
@@ -151,8 +178,14 @@ export default function AdminPage() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Change Role</DropdownMenuLabel>
                         {u.role !== 'admin' && (
                           <DropdownMenuItem onClick={() => handleRoleChange(u.id, 'admin')}>Promote to Admin</DropdownMenuItem>
+                        )}
+                        {u.role !== 'team_leader' && (
+                          <DropdownMenuItem onClick={() => handleRoleChange(u.id, 'team_leader')}>
+                            <UserCog className="mr-2 h-4 w-4" />Set as Team Leader
+                          </DropdownMenuItem>
                         )}
                         {u.role !== 'user' && (
                           <DropdownMenuItem onClick={() => handleRoleChange(u.id, 'user')}>Set as User</DropdownMenuItem>
@@ -160,6 +193,30 @@ export default function AdminPage() {
                         {u.role !== 'viewer' && (
                           <DropdownMenuItem onClick={() => handleRoleChange(u.id, 'viewer')}>Set as Viewer</DropdownMenuItem>
                         )}
+
+                        <DropdownMenuSeparator />
+
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
+                            <Users className="mr-2 h-4 w-4" />Change Team
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent>
+                            {u.team !== null && (
+                              <DropdownMenuItem onClick={() => handleTeamChange(u.id, null)}>
+                                Remove from team
+                              </DropdownMenuItem>
+                            )}
+                            {teams.filter(t => t.id !== u.team).map((t) => (
+                              <DropdownMenuItem key={t.id} onClick={() => handleTeamChange(u.id, t.id)}>
+                                {t.name}
+                              </DropdownMenuItem>
+                            ))}
+                            {teams.length === 0 && (
+                              <DropdownMenuItem disabled>No teams available</DropdownMenuItem>
+                            )}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+
                         {u.id !== user?.id && (
                           <>
                             <DropdownMenuSeparator />
@@ -178,7 +235,7 @@ export default function AdminPage() {
                 </TableRow>
               ))}
               {users.length === 0 && (
-                <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-8">No users found</TableCell></TableRow>
+                <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">No users found</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
