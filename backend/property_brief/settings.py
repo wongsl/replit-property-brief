@@ -30,8 +30,8 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
 ]
 
-ROOT_URLCONF = 'docvault.urls'
-WSGI_APPLICATION = 'docvault.wsgi.application'
+ROOT_URLCONF = 'property_brief.urls'
+WSGI_APPLICATION = 'property_brief.wsgi.application'
 
 DATABASES = {
     'default': dj_database_url.config(default=os.environ.get('DATABASE_URL'))
@@ -68,7 +68,7 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'docvault-cache',
+        'LOCATION': 'property-brief-cache',
         'TIMEOUT': 300,
         'OPTIONS': {
             'MAX_ENTRIES': 1000,

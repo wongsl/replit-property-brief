@@ -38,7 +38,7 @@ export default function AuthPage() {
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-xl ring-4 ring-primary/10">
             <Database className="h-6 w-6" />
           </div>
-          <h1 className="font-display text-3xl font-bold tracking-tight">DocVault</h1>
+          <h1 className="font-display text-3xl font-bold tracking-tight">Property Brief</h1>
           <p className="text-muted-foreground">Secure document storage for teams.</p>
         </div>
 

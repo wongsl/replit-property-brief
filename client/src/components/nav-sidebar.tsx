@@ -41,7 +41,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <header className="flex h-16 shrink-0 items-center gap-2 border-b bg-background/95 backdrop-blur px-4">
             <SidebarTrigger className="-ml-1" />
             <div className="mr-4 hidden md:flex">
-              <span className="font-display font-bold text-lg tracking-tight">DocVault</span>
+              <span className="font-display font-bold text-lg tracking-tight">Property Brief</span>
             </div>
             <div className="ml-auto flex items-center gap-4">
                <div className="text-xs font-medium text-muted-foreground bg-secondary/50 px-3 py-1 rounded-full border border-border/50">
@@ -97,7 +97,7 @@ function AppSidebar() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Database className="h-4 w-4" />
           </div>
-          DocVault
+          Property Brief
         </div>
       </SidebarHeader>
       <SidebarContent>

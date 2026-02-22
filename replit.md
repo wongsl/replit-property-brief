@@ -1,4 +1,4 @@
-# DocVault - Secure Document Management System
+# Property Brief - Secure Document Management System
 
 ## Overview
 Full-stack web application for secure document management featuring role-based access control, team-based sharing, AI-powered analysis, and comprehensive file organization.
@@ -17,7 +17,7 @@ client/src/           - React frontend
   lib/mock-auth.tsx   - Auth context (now uses real Django API, name kept for compatibility)
 
 backend/              - Django project
-  docvault/           - Django settings, urls, wsgi
+  property_brief/     - Django settings, urls, wsgi
   documents/          - Models, views, serializers, auth_backend
     models.py         - User, Team, Folder, Tag, Document, DocumentPermission
     views.py          - REST API views for auth, documents, folders, admin

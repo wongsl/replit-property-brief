@@ -112,11 +112,21 @@ export default function DashboardPage() {
   const customCollisionDetection: CollisionDetection = (args) => {
     const activeId = String(args.active.id);
     if (!activeId.startsWith('folder-')) {
+      // Document drag — use drop-folder droppable zones
       const dropFolderContainers = args.droppableContainers.filter(c => String(c.id).startsWith('drop-folder-'));
       const pointerCollisions = pointerWithin({ ...args, droppableContainers: dropFolderContainers });
       if (pointerCollisions.length > 0) return pointerCollisions;
       return rectIntersection({ ...args, droppableContainers: dropFolderContainers });
     }
+    // Folder drag — check if pointer is directly over a different folder (for nesting)
+    const activeFolderIdStr = activeId.replace('folder-', '');
+    const dropFolderContainers = args.droppableContainers.filter(c => {
+      const cId = String(c.id);
+      return cId.startsWith('drop-folder-') && cId !== `drop-folder-${activeFolderIdStr}`;
+    });
+    const pointerCollisions = pointerWithin({ ...args, droppableContainers: dropFolderContainers });
+    if (pointerCollisions.length > 0) return pointerCollisions;
+    // Fall back to sortable reordering
     const sortableContainers = args.droppableContainers.filter(c => String(c.id).startsWith('folder-'));
     return closestCenter({ ...args, droppableContainers: sortableContainers });
   };
@@ -356,9 +366,16 @@ export default function DashboardPage() {
   const handleDragOver = (event: any) => {
     const { active, over } = event;
     if (!over) { setDragOverFolderId(null); return; }
+    const activeStr = String(active.id);
     const overStr = String(over.id);
-    if (overStr.startsWith('drop-folder-') && !String(active.id).startsWith('folder-')) {
-      setDragOverFolderId(parseInt(overStr.replace('drop-folder-', '')));
+    if (overStr.startsWith('drop-folder-')) {
+      const targetFolderId = parseInt(overStr.replace('drop-folder-', ''));
+      // For folder drags, don't highlight if hovering over itself
+      if (activeStr.startsWith('folder-') && parseInt(activeStr.replace('folder-', '')) === targetFolderId) {
+        setDragOverFolderId(null);
+      } else {
+        setDragOverFolderId(targetFolderId);
+      }
     } else {
       setDragOverFolderId(null);
     }
@@ -373,9 +390,18 @@ export default function DashboardPage() {
     const overStr = String(over.id);
 
     if (!activeStr.startsWith('folder-') && overStr.startsWith('drop-folder-')) {
+      // Document dropped into a folder
       const folderId = parseInt(overStr.replace('drop-folder-', ''));
       handleMoveToFolder(active.id, folderId);
+    } else if (activeStr.startsWith('folder-') && overStr.startsWith('drop-folder-')) {
+      // Folder dragged onto another folder — nest it
+      const draggedFolderId = parseInt(activeStr.replace('folder-', ''));
+      const targetFolderId = parseInt(overStr.replace('drop-folder-', ''));
+      if (draggedFolderId !== targetFolderId) {
+        handleMoveFolder(draggedFolderId, targetFolderId);
+      }
     } else if (activeStr.startsWith('folder-') && overStr.startsWith('folder-')) {
+      // Folder dragged between folders — reorder
       const activeIdx = folders.findIndex(f => `folder-${f.id}` === activeStr);
       const overIdx = folders.findIndex(f => `folder-${f.id}` === overStr);
       if (activeIdx !== -1 && overIdx !== -1) {
@@ -583,14 +609,29 @@ export default function DashboardPage() {
           </Table>
         </Card>
         <DragOverlay>
-          {activeDragId ? (
-            <div className="bg-background/90 border p-2 rounded shadow-lg flex items-center gap-2">
-              <GripVertical className="h-4 w-4" />
-              <span className="text-sm font-medium">
-                {String(activeDragId).startsWith('folder-') ? flatFolders.find(f => `folder-${f.id}` === activeDragId)?.name : documents.find(f => f.id === activeDragId)?.name}
-              </span>
-            </div>
-          ) : null}
+          {activeDragId ? (() => {
+            const isFolder = String(activeDragId).startsWith('folder-');
+            if (isFolder) {
+              const f = flatFolders.find(fl => `folder-${fl.id}` === activeDragId);
+              const depth = f?.depth || 0;
+              return (
+                <div
+                  className="bg-background/90 border p-2 rounded shadow-lg flex items-center gap-2 min-w-[120px]"
+                  style={{ paddingLeft: depth * 12 + 8 }}
+                >
+                  <FolderOpen className="h-4 w-4 text-primary shrink-0" />
+                  <span className="text-sm font-medium">{depth > 0 ? '└ ' : ''}{f?.name}</span>
+                </div>
+              );
+            }
+            const doc = documents.find(d => d.id === activeDragId);
+            return (
+              <div className="bg-background/90 border p-2 rounded shadow-lg flex items-center gap-2">
+                <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
+                <span className="text-sm font-medium">{doc?.name}</span>
+              </div>
+            );
+          })() : null}
         </DragOverlay>
       </DndContext>
     </div>
@@ -649,7 +690,9 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
             <span className={cn("font-bold text-xs uppercase tracking-tight", depth === 0 && "text-sm")}>{folder.name}</span>
             <Badge variant="outline" className="text-[10px] h-4">{totalDocs}</Badge>
             {isDragTarget && (
-              <Badge variant="default" className="text-[10px] h-4 bg-primary animate-pulse">Drop here</Badge>
+              <Badge variant="default" className="text-[10px] h-5 px-2 bg-primary animate-pulse">
+                → {folder.full_path}
+              </Badge>
             )}
             {depth < 2 && (
               <Button
@@ -669,13 +712,20 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent>
-                <DropdownMenuLabel>Move folder to</DropdownMenuLabel>
+                {folder.parent_name && (
+                  <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground pb-0">
+                    In: {folder.parent_name}
+                  </DropdownMenuLabel>
+                )}
+                <DropdownMenuLabel>Move to</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {folder.parent && (
-                  <DropdownMenuItem onClick={() => handleMoveFolder(folder.id, null)}>Root (top level)</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleMoveFolder(folder.id, null)}>
+                    <FolderOpen className="mr-2 h-3.5 w-3.5 text-muted-foreground" />Root (top level)
+                  </DropdownMenuItem>
                 )}
                 {flatFolders?.filter((f: any) => {
-                  const excludeIds = [folder.id, ...getDescendantIds(folder)];
+                  const excludeIds = [folder.id, folder.parent, ...getDescendantIds(folder)].filter(Boolean);
                   return !excludeIds.includes(f.id);
                 }).map((f: any) => (
                   <DropdownMenuItem key={f.id} onClick={() => handleMoveFolder(folder.id, f.id)}>
