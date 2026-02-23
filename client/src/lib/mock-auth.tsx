@@ -10,6 +10,7 @@ interface User {
   role: UserRole;
   team: number | null;
   team_name: string | null;
+  credits: number;
 }
 
 interface AuthContextType {

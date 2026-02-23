@@ -11,9 +11,10 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
-  ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
-  EyeOff, Lock
+  ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, Minus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
+  EyeOff, Lock, Coins
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
   DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
@@ -89,7 +90,8 @@ function getDescendantIds(folder: any): number[] {
 }
 
 export default function DashboardPage() {
-  const { user, decrementRateLimit, rateLimitRemaining, resetRateLimit } = useAuth();
+  const { user, refreshUser, decrementRateLimit, rateLimitRemaining, resetRateLimit } = useAuth();
+  const { toast } = useToast();
   const [documents, setDocuments] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
   const [teams, setTeams] = useState<{id: number, name: string}[]>([]);
@@ -111,6 +113,9 @@ export default function DashboardPage() {
   const [expandedAnalysis, setExpandedAnalysis] = useState<Set<number>>(new Set());
   const [addingSubfolderTo, setAddingSubfolderTo] = useState<number | null>(null);
   const [subfolderName, setSubfolderName] = useState("");
+  const [showCreditsDialog, setShowCreditsDialog] = useState(false);
+  const [myCreditRequest, setMyCreditRequest] = useState<any | null>(undefined);
+  const [creditRequestAmount, setCreditRequestAmount] = useState(5);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -156,6 +161,40 @@ export default function DashboardPage() {
   useEffect(() => {
     apiFetch('/api/teams/').then(r => r.ok ? r.json() : []).then(setTeams).catch(() => {});
   }, []);
+
+  const loadCreditRequest = () => {
+    apiFetch('/api/credits/request/').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        setMyCreditRequest(data.id ? data : null);
+      }
+    });
+  };
+
+  useEffect(() => { loadCreditRequest(); }, []);
+
+  const handleCreditRequest = async () => {
+    if (creditRequestAmount < 1 || creditRequestAmount > 10) return;
+    const res = await apiFetch('/api/credits/request/', {
+      method: 'POST',
+      body: JSON.stringify({ amount: creditRequestAmount }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      setMyCreditRequest(data);
+      toast({ title: "Request submitted", description: `Requested ${creditRequestAmount} credit${creditRequestAmount > 1 ? 's' : ''}. An admin will review it.` });
+    } else {
+      toast({ title: "Could not submit request", description: data.error, variant: "destructive" });
+    }
+  };
+
+  const handleCancelCreditRequest = async () => {
+    const res = await apiFetch('/api/credits/request/cancel/', { method: 'DELETE' });
+    if (res.ok) {
+      setMyCreditRequest(null);
+      toast({ title: "Request cancelled", description: "Your credit request has been withdrawn." });
+    }
+  };
 
   const handleCreateGroup = async (parentId?: number) => {
     const name = parentId ? subfolderName.trim() : newGroupName.trim();
@@ -209,6 +248,10 @@ export default function DashboardPage() {
   const handleAnalyze = async (targetFile?: any) => {
     const fileToAnalyze = targetFile || selectedFile;
     if (!fileToAnalyze || !decrementRateLimit()) return;
+    if ((user?.credits ?? 0) < 1) {
+      toast({ title: "No credits remaining", description: "Request more credits on the Teams page.", variant: "destructive" });
+      return;
+    }
     setSelectedFile(fileToAnalyze);
     setIsAnalyzing(true);
     const res = await apiFetch(`/api/documents/${fileToAnalyze.id}/analyze/`, {
@@ -220,6 +263,11 @@ export default function DashboardPage() {
       setSelectedFile(updated);
       setDocuments(prev => prev.map(d => d.id === updated.id ? updated : d));
       setExpandedAnalysis(prev => new Set(prev).add(updated.id));
+      await refreshUser();
+    } else if (res.status === 402) {
+      const err = await res.json();
+      toast({ title: "No credits remaining", description: err.error, variant: "destructive" });
+      await refreshUser();
     }
     setIsAnalyzing(false);
   };
@@ -508,6 +556,7 @@ export default function DashboardPage() {
     handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining,
     expandedAnalysis, toggleAnalysisExpanded,
     teams, handleChangeTeam, handleTogglePrivate,
+    userCredits: user?.credits ?? 0,
   };
 
   const countDocsInTree = (folder: any): number => {
@@ -526,10 +575,14 @@ export default function DashboardPage() {
           <p className="text-muted-foreground">Manage, group, and analyze your files.</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={resetRateLimit} data-testid="button-reset-quota">
-            <RefreshCw className="mr-2 h-4 w-4" />Reset Quota
-          </Button>
-          <Button onClick={() => { setUploadPrivate(false); setShowUploadDialog(true); }} disabled={isUploading || rateLimitRemaining <= 0} data-testid="button-upload">
+          <button
+            onClick={() => setShowCreditsDialog(true)}
+            className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-medium transition-opacity hover:opacity-80 ${(user?.credits ?? 0) === 0 ? 'border-destructive/40 bg-destructive/10 text-destructive' : (user?.credits ?? 0) <= 2 ? 'border-orange-400/40 bg-orange-500/10 text-orange-500' : 'border-primary/30 bg-primary/5 text-primary'}`}
+          >
+            <Coins className="h-3.5 w-3.5" />
+            {user?.credits ?? 0} {(user?.credits ?? 0) === 1 ? 'credit' : 'credits'} left
+          </button>
+<Button onClick={() => { setUploadPrivate(false); setShowUploadDialog(true); }} disabled={isUploading || rateLimitRemaining <= 0} data-testid="button-upload">
             <UploadCloud className="mr-2 h-4 w-4" />{isUploading ? "Uploading..." : "Upload File"}
           </Button>
         </div>
@@ -665,6 +718,59 @@ export default function DashboardPage() {
           })() : null}
         </DragOverlay>
       </DndContext>
+
+      <Dialog open={showCreditsDialog} onOpenChange={setShowCreditsDialog}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Coins className="h-5 w-5" />
+              Analysis Credits
+            </DialogTitle>
+            <DialogDescription>
+              You have <strong>{user?.credits ?? 0}</strong> credit{(user?.credits ?? 1) !== 1 ? 's' : ''} left. Each analysis costs 1 credit.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            {myCreditRequest === undefined ? null : myCreditRequest !== null ? (
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="space-y-0.5">
+                  <p className="text-sm font-medium">Request pending</p>
+                  <p className="text-xs text-muted-foreground">
+                    {myCreditRequest.amount} credit{myCreditRequest.amount > 1 ? 's' : ''} requested · {new Date(myCreditRequest.requested_at).toLocaleDateString()}
+                  </p>
+                </div>
+                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive hover:bg-destructive/10" onClick={handleCancelCreditRequest}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">Request up to 10 credits. An admin will review your request.</p>
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">Amount to request</label>
+                  <div className="flex items-center gap-1 border rounded-md">
+                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-r-none" onClick={() => setCreditRequestAmount(a => Math.max(1, a - 1))}>
+                      <Minus className="h-3.5 w-3.5" />
+                    </Button>
+                    <span className="w-8 text-center text-sm font-medium">{creditRequestAmount}</span>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-l-none" onClick={() => setCreditRequestAmount(a => Math.min(10, a + 1))}>
+                      <Plus className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCreditsDialog(false)}>Close</Button>
+            {myCreditRequest === null && (
+              <Button onClick={handleCreditRequest}>
+                <Coins className="mr-2 h-4 w-4" />Request {creditRequestAmount} Credits
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showUploadDialog} onOpenChange={setShowUploadDialog}>
         <DialogContent className="sm:max-w-sm">
@@ -862,7 +968,7 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
   );
 }
 
-function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, depth = 0 }: any) {
+function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, userCredits = 0, depth = 0 }: any) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: file.id });
   const [newTag, setNewTag] = useState("");
   const isEditing = editingFileId === file.id;
@@ -940,7 +1046,7 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
         </TableCell>
         <TableCell className="text-right">
           <div className="flex items-center justify-end gap-1">
-            <Button variant="ghost" size="sm" className="h-8 gap-1 text-primary" onClick={() => handleAnalyze(file)} disabled={isAnalyzing || rateLimitRemaining <= 0} data-testid={`button-analyze-${file.id}`}>
+            <Button variant="ghost" size="sm" className={`h-8 gap-1 ${userCredits <= 0 ? 'text-muted-foreground' : 'text-primary'}`} onClick={() => handleAnalyze(file)} disabled={isAnalyzing || rateLimitRemaining <= 0 || userCredits <= 0} data-testid={`button-analyze-${file.id}`} title={userCredits <= 0 ? 'No credits remaining' : undefined}>
               {isAnalyzing && selectedFile?.id === file.id ? (
                 <><RefreshCw className="h-4 w-4 animate-spin" /><span className="hidden md:inline">Analyzing...</span></>
               ) : (

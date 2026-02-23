@@ -7,7 +7,8 @@ import {
   LogOut,
   FileText,
   Users,
-  Database
+  Database,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,7 +28,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout, rateLimitRemaining } = useAuth();
+  const { user, logout, rateLimitRemaining, resetRateLimit } = useAuth();
   const [location] = useLocation();
 
   if (!user) return <div className="min-h-screen w-full bg-background">{children}</div>;
@@ -48,6 +49,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                     rateLimitRemaining === 0 ? "text-destructive" : "text-primary"
                   )}>{rateLimitRemaining}</span> requests left
                </div>
+               <Button variant="outline" size="sm" onClick={resetRateLimit} data-testid="button-reset-quota">
+                 <RefreshCw className="mr-2 h-4 w-4" />Reset Quota
+               </Button>
                <Avatar className="h-8 w-8">
                   <AvatarFallback>{user.username[0].toUpperCase()}</AvatarFallback>
                </Avatar>

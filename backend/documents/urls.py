@@ -24,5 +24,11 @@ urlpatterns = [
     path('admin/apply/', views.admin_apply),
     path('admin/applications/', views.admin_applications_list),
     path('admin/applications/<int:application_id>/resolve/', views.admin_application_resolve),
+    path('admin/users/<int:user_id>/grant-credits/', views.admin_grant_credits),
+    path('admin/credit-requests/', views.admin_credit_requests),
+    path('admin/credit-requests/<int:request_id>/resolve/', views.admin_credit_request_resolve),
+    path('credits/', views.my_credits),
+    path('credits/request/', views.credit_request),
+    path('credits/request/cancel/', views.credit_request_cancel),
     path('', include(router.urls)),
 ]

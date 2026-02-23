@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest
+from .models import User, Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest
 
 
 class TeamSerializer(serializers.ModelSerializer):
@@ -18,7 +18,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'role', 'team', 'team_name', 'document_count', 'analyzed_count']
+        fields = ['id', 'username', 'email', 'role', 'team', 'team_name', 'document_count', 'analyzed_count', 'credits']
 
 
 class TagSerializer(serializers.ModelSerializer):
@@ -95,3 +95,21 @@ class TeamJoinRequestSerializer(serializers.ModelSerializer):
         model = TeamJoinRequest
         fields = ['id', 'user', 'username', 'team', 'team_name', 'status', 'requested_at', 'resolved_at']
         read_only_fields = ['user', 'username', 'team_name', 'status', 'requested_at', 'resolved_at']
+
+
+class CreditTransactionSerializer(serializers.ModelSerializer):
+    document_name = serializers.CharField(source='document.name', read_only=True, default=None)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True, default=None)
+
+    class Meta:
+        model = CreditTransaction
+        fields = ['id', 'type', 'amount', 'document', 'document_name', 'note', 'created_by_name', 'created_at']
+
+
+class CreditRequestSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+
+    class Meta:
+        model = CreditRequest
+        fields = ['id', 'user', 'username', 'amount', 'status', 'requested_at', 'resolved_at']
+        read_only_fields = ['user', 'username', 'status', 'requested_at', 'resolved_at']

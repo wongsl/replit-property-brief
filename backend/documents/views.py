@@ -3,11 +3,14 @@ from rest_framework.decorators import api_view, action, permission_classes
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password, check_password
+from django.db import transaction as db_transaction
 from django.db.models import Count, Q
-from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest
+from django.utils import timezone
+from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest
 from .serializers import (
     UserSerializer, TeamSerializer, FolderSerializer, TagSerializer,
-    DocumentSerializer, DocumentPermissionSerializer, TeamJoinRequestSerializer, AdminRequestSerializer
+    DocumentSerializer, DocumentPermissionSerializer, TeamJoinRequestSerializer, AdminRequestSerializer,
+    CreditTransactionSerializer, CreditRequestSerializer
 )
 from .cache_utils import (
     get_cached, set_cached, _docs_key, _folders_key, _teams_key,
@@ -321,12 +324,32 @@ class DocumentViewSet(viewsets.ModelViewSet):
         ai_analysis = request.data.get('ai_analysis')
         ai_score = request.data.get('ai_score')
 
-        if ai_analysis is not None:
-            doc.ai_analysis = ai_analysis
-        if ai_score is not None:
-            doc.ai_score = ai_score
-        doc.save(update_fields=['ai_analysis', 'ai_score'])
+        if ai_analysis is None and ai_score is None:
+            return Response({'error': 'No analysis data provided'}, status=400)
+
+        with db_transaction.atomic():
+            user = User.objects.select_for_update().get(pk=request.user.pk)
+            if user.credits < 1:
+                return Response({'error': 'Insufficient credits. Request more credits to continue analyzing.'}, status=402)
+
+            if ai_analysis is not None:
+                doc.ai_analysis = ai_analysis
+            if ai_score is not None:
+                doc.ai_score = ai_score
+            doc.save(update_fields=['ai_analysis', 'ai_score'])
+
+            user.credits -= 1
+            user.save(update_fields=['credits'])
+            CreditTransaction.objects.create(
+                user=user,
+                type='analyze',
+                amount=-1,
+                document=doc,
+                note=f'Analysis of "{doc.name}"',
+            )
+
         invalidate_docs(request.user.id, getattr(request.user, 'team_id', None))
+        invalidate_user(request.user.id)
         return Response(DocumentSerializer(doc).data)
 
     @action(detail=False, methods=['post'])
@@ -466,6 +489,16 @@ def team_join_request(request):
         team = Team.objects.get(pk=team_id)
     except Team.DoesNotExist:
         return Response({'error': 'Team not found'}, status=404)
+
+    # Only one pending join request allowed at a time across all teams
+    existing_pending = TeamJoinRequest.objects.filter(
+        user=request.user, status='pending'
+    ).exclude(team=team).first()
+    if existing_pending:
+        return Response(
+            {'error': f'You already have a pending request for "{existing_pending.team.name}". Cancel it before requesting another.'},
+            status=400
+        )
 
     req, created = TeamJoinRequest.objects.get_or_create(
         user=request.user, team=team, defaults={'status': 'pending'}
@@ -623,3 +656,129 @@ def admin_application_resolve(request, application_id):
         invalidate_user(app.user.id)
 
     return Response(AdminRequestSerializer(app).data)
+
+
+# --- Credit Views ---
+
+@api_view(['GET'])
+def my_credits(request):
+    """Return the current user's credit balance and recent transactions."""
+    transactions = CreditTransaction.objects.filter(user=request.user).select_related('document', 'created_by')[:50]
+    return Response({
+        'credits': request.user.credits,
+        'transactions': CreditTransactionSerializer(transactions, many=True).data,
+    })
+
+
+@api_view(['GET', 'POST'])
+def credit_request(request):
+    """GET: current user's pending credit request. POST: submit a new credit request."""
+    if request.method == 'GET':
+        req = CreditRequest.objects.filter(user=request.user, status='pending').first()
+        return Response(CreditRequestSerializer(req).data if req else {})
+
+    amount = request.data.get('amount')
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        return Response({'error': 'amount must be an integer'}, status=400)
+
+    if amount < 1 or amount > 10:
+        return Response({'error': 'You may request between 1 and 10 credits at a time'}, status=400)
+
+    if CreditRequest.objects.filter(user=request.user, status='pending').exists():
+        return Response({'error': 'You already have a pending credit request'}, status=400)
+
+    req = CreditRequest.objects.create(user=request.user, amount=amount)
+    return Response(CreditRequestSerializer(req).data, status=201)
+
+
+@api_view(['DELETE'])
+def credit_request_cancel(request):
+    """Cancel the current user's pending credit request."""
+    deleted, _ = CreditRequest.objects.filter(user=request.user, status='pending').delete()
+    if deleted:
+        return Response({'message': 'Request cancelled'})
+    return Response({'error': 'No pending request found'}, status=404)
+
+
+@api_view(['GET'])
+def admin_credit_requests(request):
+    """List all pending credit requests. Admin only."""
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin only'}, status=403)
+    reqs = CreditRequest.objects.filter(status='pending').select_related('user')
+    return Response(CreditRequestSerializer(reqs, many=True).data)
+
+
+@api_view(['POST'])
+def admin_credit_request_resolve(request, request_id):
+    """Approve or reject a credit request. Admin only."""
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin only'}, status=403)
+
+    resolve_action = request.data.get('action')
+    if resolve_action not in ('approve', 'reject'):
+        return Response({'error': "action must be 'approve' or 'reject'"}, status=400)
+
+    try:
+        req = CreditRequest.objects.select_related('user').get(pk=request_id, status='pending')
+    except CreditRequest.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+
+    req.status = 'approved' if resolve_action == 'approve' else 'rejected'
+    req.resolved_at = timezone.now()
+    req.resolved_by = request.user
+    req.save()
+
+    if resolve_action == 'approve':
+        with db_transaction.atomic():
+            user = User.objects.select_for_update().get(pk=req.user_id)
+            user.credits += req.amount
+            user.save(update_fields=['credits'])
+            CreditTransaction.objects.create(
+                user=user,
+                type='request_approved',
+                amount=req.amount,
+                note=f'Credit request approved by {request.user.username}',
+                created_by=request.user,
+            )
+        invalidate_user(user.id)
+
+    return Response(CreditRequestSerializer(req).data)
+
+
+@api_view(['POST'])
+def admin_grant_credits(request, user_id):
+    """Admin grants credits directly to a user."""
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin only'}, status=403)
+
+    amount = request.data.get('amount')
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        return Response({'error': 'amount must be an integer'}, status=400)
+
+    if amount < 1:
+        return Response({'error': 'amount must be positive'}, status=400)
+
+    try:
+        target_user = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=404)
+
+    with db_transaction.atomic():
+        target_user = User.objects.select_for_update().get(pk=user_id)
+        target_user.credits += amount
+        target_user.save(update_fields=['credits'])
+        CreditTransaction.objects.create(
+            user=target_user,
+            type='admin_grant',
+            amount=amount,
+            note=f'Granted by {request.user.username}',
+            created_by=request.user,
+        )
+    invalidate_user(target_user.id)
+
+    return Response({'credits': target_user.credits})

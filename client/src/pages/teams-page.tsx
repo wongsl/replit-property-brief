@@ -19,7 +19,7 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Users, LogOut, CheckCircle, XCircle, Clock, Plus, Settings, UserCog, UserMinus, Search, ShieldCheck } from "lucide-react";
+import { Users, LogOut, CheckCircle, XCircle, Clock, Plus, Settings, UserCog, UserMinus, Search, ShieldCheck, Coins, Minus } from "lucide-react";
 
 async function apiFetch(url: string, options: RequestInit = {}) {
   return fetch(url, {
@@ -43,8 +43,13 @@ export default function TeamsPage() {
   const [newTeamName, setNewTeamName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [requestingTeamId, setRequestingTeamId] = useState<number | null>(null);
+  const [cancellingTeamId, setCancellingTeamId] = useState<number | null>(null);
   const [teamSearch, setTeamSearch] = useState("");
   const [myAdminRequest, setMyAdminRequest] = useState<any | null>(undefined);
+  const [myCreditRequest, setMyCreditRequest] = useState<any | null>(undefined);
+  const [creditRequestAmount, setCreditRequestAmount] = useState(5);
+  const [isSubmittingCredit, setIsSubmittingCredit] = useState(false);
+  const [isCancellingCredit, setIsCancellingCredit] = useState(false);
 
   // Member management dialog state
   const [manageTeam, setManageTeam] = useState<any | null>(null);
@@ -82,11 +87,21 @@ export default function TeamsPage() {
     });
   };
 
+  const loadMyCreditRequest = () => {
+    apiFetch('/api/credits/request/').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        setMyCreditRequest(data.id ? data : null);
+      }
+    });
+  };
+
   useEffect(() => {
     loadTeams();
     loadJoinRequests();
     loadMyPendingRequests();
     loadMyAdminRequest();
+    loadMyCreditRequest();
   }, [user?.role]);
 
   const openManageDialog = async (team: any) => {
@@ -134,6 +149,7 @@ export default function TeamsPage() {
   };
 
   const handleJoinRequest = async (teamId: number) => {
+    if (requestingTeamId !== null) return;
     setRequestingTeamId(teamId);
     const res = await apiFetch('/api/teams/join-request/', {
       method: 'POST',
@@ -150,6 +166,8 @@ export default function TeamsPage() {
   };
 
   const handleCancelRequest = async (teamId: number) => {
+    if (cancellingTeamId !== null) return;
+    setCancellingTeamId(teamId);
     const res = await apiFetch('/api/teams/join-request/', {
       method: 'DELETE',
       body: JSON.stringify({ team_id: teamId }),
@@ -161,6 +179,7 @@ export default function TeamsPage() {
       const data = await res.json();
       toast({ title: "Error", description: data.error, variant: "destructive" });
     }
+    setCancellingTeamId(null);
   };
 
   const handleLeaveTeam = async () => {
@@ -221,6 +240,37 @@ export default function TeamsPage() {
     } else {
       toast({ title: "Could not apply", description: data.error, variant: "destructive" });
     }
+  };
+
+  const handleCreditRequest = async () => {
+    if (isSubmittingCredit || creditRequestAmount < 1 || creditRequestAmount > 10) return;
+    setIsSubmittingCredit(true);
+    const res = await apiFetch('/api/credits/request/', {
+      method: 'POST',
+      body: JSON.stringify({ amount: creditRequestAmount }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      setMyCreditRequest(data);
+      toast({ title: "Request submitted", description: `Requested ${creditRequestAmount} credit${creditRequestAmount > 1 ? 's' : ''}. An admin will review it.` });
+    } else {
+      toast({ title: "Could not submit request", description: data.error, variant: "destructive" });
+    }
+    setIsSubmittingCredit(false);
+  };
+
+  const handleCancelCreditRequest = async () => {
+    if (isCancellingCredit) return;
+    setIsCancellingCredit(true);
+    const res = await apiFetch('/api/credits/request/cancel/', { method: 'DELETE' });
+    if (res.ok) {
+      setMyCreditRequest(null);
+      toast({ title: "Request cancelled", description: "Your credit request has been withdrawn." });
+    } else {
+      const data = await res.json();
+      toast({ title: "Error", description: data.error, variant: "destructive" });
+    }
+    setIsCancellingCredit(false);
   };
 
   const handleWithdrawAdminApp = async () => {
@@ -397,6 +447,59 @@ export default function TeamsPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Request Credits */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Coins className="h-5 w-5" />
+            Analysis Credits
+          </CardTitle>
+          <CardDescription>
+            Each document analysis costs 1 credit. Request more if you run out.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {myCreditRequest === undefined ? null : myCreditRequest === null ? (
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <p className="text-sm text-muted-foreground">You have no pending credit request. You may request up to 10 credits at a time.</p>
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-1 border rounded-md">
+                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-r-none" onClick={() => setCreditRequestAmount(a => Math.max(1, a - 1))}>
+                    <Minus className="h-3.5 w-3.5" />
+                  </Button>
+                  <span className="w-8 text-center text-sm font-medium">{creditRequestAmount}</span>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-l-none" onClick={() => setCreditRequestAmount(a => Math.min(10, a + 1))}>
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                <Button variant="outline" onClick={handleCreditRequest}>
+                  <Coins className="mr-2 h-4 w-4" />Request Credits
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Badge variant="outline">
+                  <Clock className="mr-1 h-3 w-3" />Pending
+                </Badge>
+                <span className="text-sm text-muted-foreground">
+                  Requested <strong>{myCreditRequest.amount}</strong> credit{myCreditRequest.amount > 1 ? 's' : ''} on {new Date(myCreditRequest.requested_at).toLocaleDateString()}
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={handleCancelCreditRequest}
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* All teams */}
       <Card>

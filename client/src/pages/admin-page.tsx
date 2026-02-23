@@ -4,9 +4,11 @@ import { Redirect } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
-  Users, Activity, ShieldAlert, Settings, MoreVertical, Trash2, UserCog, FileText, BarChart2,
-  CheckCircle, XCircle, ShieldCheck
+  Users, Activity, ShieldAlert, Settings, MoreVertical, Trash2, UserCog,
+  CheckCircle, XCircle, ShieldCheck, Coins, Plus, Minus
 } from "lucide-react";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -36,8 +38,12 @@ export default function AdminPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [teams, setTeams] = useState<any[]>([]);
   const [adminApplications, setAdminApplications] = useState<any[]>([]);
+  const [creditRequests, setCreditRequests] = useState<any[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [grantTarget, setGrantTarget] = useState<any>(null);
+  const [grantAmount, setGrantAmount] = useState("5");
+  const [isGranting, setIsGranting] = useState(false);
 
   const loadUsers = () => {
     apiFetch('/api/admin/users/').then(async (res) => {
@@ -51,9 +57,16 @@ export default function AdminPage() {
     });
   };
 
+  const loadCreditRequests = () => {
+    apiFetch('/api/admin/credit-requests/').then(async (res) => {
+      if (res.ok) setCreditRequests(await res.json());
+    });
+  };
+
   useEffect(() => {
     loadUsers();
     loadApplications();
+    loadCreditRequests();
     apiFetch('/api/teams/').then(async (res) => {
       if (res.ok) setTeams(await res.json());
     });
@@ -68,6 +81,35 @@ export default function AdminPage() {
       setAdminApplications(prev => prev.filter(a => a.id !== appId));
       if (action === 'approve') loadUsers();
     }
+  };
+
+  const handleResolveCreditRequest = async (reqId: number, action: 'approve' | 'reject') => {
+    const res = await apiFetch(`/api/admin/credit-requests/${reqId}/resolve/`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+    if (res.ok) {
+      setCreditRequests(prev => prev.filter(r => r.id !== reqId));
+      if (action === 'approve') loadUsers();
+    }
+  };
+
+  const handleGrantCredits = async () => {
+    if (!grantTarget) return;
+    const amount = parseInt(grantAmount);
+    if (isNaN(amount) || amount < 1) return;
+    setIsGranting(true);
+    const res = await apiFetch(`/api/admin/users/${grantTarget.id}/grant-credits/`, {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setUsers(prev => prev.map(u => u.id === grantTarget.id ? { ...u, credits: data.credits } : u));
+      setGrantTarget(null);
+      setGrantAmount("5");
+    }
+    setIsGranting(false);
   };
 
   if (user?.role !== "admin") {
@@ -211,10 +253,58 @@ export default function AdminPage() {
         </Card>
       )}
 
+      {creditRequests.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Coins className="h-5 w-5" />
+              Credit Requests
+              <Badge className="ml-1 h-5 px-1.5 text-xs">{creditRequests.length}</Badge>
+            </CardTitle>
+            <CardDescription>Users requesting additional analysis credits.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>User</TableHead>
+                  <TableHead className="text-right">Requested</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {creditRequests.map((req) => (
+                  <TableRow key={req.id}>
+                    <TableCell className="font-medium">{req.username}</TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant="outline"><Coins className="mr-1 h-3 w-3" />{req.amount}</Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {new Date(req.requested_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" variant="default" onClick={() => handleResolveCreditRequest(req.id, 'approve')}>
+                          <CheckCircle className="mr-1 h-3.5 w-3.5" />Approve
+                        </Button>
+                        <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => handleResolveCreditRequest(req.id, 'reject')}>
+                          <XCircle className="mr-1 h-3.5 w-3.5" />Reject
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>User Management</CardTitle>
-          <CardDescription>Manage roles, teams, and permissions for all registered users.</CardDescription>
+          <CardDescription>Manage roles, teams, permissions, and credits for all registered users.</CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -226,6 +316,7 @@ export default function AdminPage() {
                 <TableHead>Team</TableHead>
                 <TableHead className="text-right">Files</TableHead>
                 <TableHead className="text-right">Analyzed</TableHead>
+                <TableHead className="text-right">Credits</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -240,6 +331,11 @@ export default function AdminPage() {
                   <TableCell className="text-muted-foreground">{u.team_name || "No team"}</TableCell>
                   <TableCell className="text-right font-medium">{u.document_count ?? 0}</TableCell>
                   <TableCell className="text-right font-medium">{u.analyzed_count ?? 0}</TableCell>
+                  <TableCell className="text-right">
+                    <span className={`text-sm font-medium ${(u.credits ?? 0) === 0 ? 'text-destructive' : (u.credits ?? 0) <= 2 ? 'text-orange-500' : ''}`}>
+                      {u.credits ?? 0}
+                    </span>
+                  </TableCell>
                   <TableCell className="text-right">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -287,6 +383,12 @@ export default function AdminPage() {
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
 
+                        <DropdownMenuSeparator />
+
+                        <DropdownMenuItem onClick={() => { setGrantTarget(u); setGrantAmount("5"); }}>
+                          <Coins className="mr-2 h-4 w-4" />Grant Credits
+                        </DropdownMenuItem>
+
                         {u.id !== user?.id && (
                           <>
                             <DropdownMenuSeparator />
@@ -305,7 +407,7 @@ export default function AdminPage() {
                 </TableRow>
               ))}
               {users.length === 0 && (
-                <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">No users found</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">No users found</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
@@ -342,6 +444,45 @@ export default function AdminPage() {
         </CardContent>
       </Card>
 
+      {/* Grant Credits Dialog */}
+      <Dialog open={!!grantTarget} onOpenChange={(open) => !open && setGrantTarget(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Grant Credits — {grantTarget?.username}</DialogTitle>
+            <DialogDescription>
+              Current balance: <strong>{grantTarget?.credits ?? 0}</strong> credits. Enter the number of credits to add.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-3">
+            <Label htmlFor="grant-amount">Credits to add</Label>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => setGrantAmount(a => String(Math.max(1, parseInt(a || '1') - 1)))}>
+                <Minus className="h-3.5 w-3.5" />
+              </Button>
+              <Input
+                id="grant-amount"
+                type="number"
+                min={1}
+                value={grantAmount}
+                onChange={(e) => setGrantAmount(e.target.value)}
+                className="text-center"
+              />
+              <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => setGrantAmount(a => String(parseInt(a || '0') + 1))}>
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGrantTarget(null)} disabled={isGranting}>Cancel</Button>
+            <Button onClick={handleGrantCredits} disabled={isGranting || !grantAmount || parseInt(grantAmount) < 1}>
+              <Coins className="mr-2 h-4 w-4" />
+              {isGranting ? "Granting..." : `Grant ${grantAmount} Credits`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete User Dialog */}
       <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>

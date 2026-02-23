@@ -7,6 +7,7 @@ class User(AbstractUser):
     role = models.CharField(max_length=15, choices=ROLE_CHOICES, default='user')
     team = models.ForeignKey('Team', on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
     email = models.EmailField(unique=True, null=True, blank=True, default=None)
+    credits = models.IntegerField(default=10)
 
     class Meta:
         db_table = 'users'
@@ -115,6 +116,40 @@ class AdminRequest(models.Model):
 
     def __str__(self):
         return f'{self.user.username} admin request ({self.status})'
+
+
+class CreditTransaction(models.Model):
+    TYPE_CHOICES = [
+        ('analyze', 'Document Analysis'),
+        ('admin_grant', 'Admin Grant'),
+        ('request_approved', 'Request Approved'),
+        ('refund', 'Refund'),
+    ]
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='credit_transactions')
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    amount = models.IntegerField()  # negative = deducted, positive = added
+    document = models.ForeignKey('Document', on_delete=models.SET_NULL, null=True, blank=True, related_name='credit_transactions')
+    note = models.CharField(max_length=255, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='granted_transactions')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'credit_transactions'
+        ordering = ['-created_at']
+
+
+class CreditRequest(models.Model):
+    STATUS_CHOICES = [('pending', 'Pending'), ('approved', 'Approved'), ('rejected', 'Rejected')]
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='credit_requests')
+    amount = models.IntegerField()
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+    requested_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='resolved_credit_requests')
+
+    class Meta:
+        db_table = 'credit_requests'
+        ordering = ['-requested_at']
 
 
 class DocumentPermission(models.Model):
