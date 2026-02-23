@@ -3,11 +3,11 @@ from rest_framework.decorators import api_view, action, permission_classes
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password, check_password
-from django.db.models import Count
-from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest
+from django.db.models import Count, Q
+from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest
 from .serializers import (
     UserSerializer, TeamSerializer, FolderSerializer, TagSerializer,
-    DocumentSerializer, DocumentPermissionSerializer, TeamJoinRequestSerializer
+    DocumentSerializer, DocumentPermissionSerializer, TeamJoinRequestSerializer, AdminRequestSerializer
 )
 from .cache_utils import (
     get_cached, set_cached, _docs_key, _folders_key, _teams_key,
@@ -108,7 +108,10 @@ def teams_list(request):
     cached = get_cached(key)
     if cached:
         return Response(cached)
-    teams = Team.objects.annotate(member_count=Count('members'))
+    teams = Team.objects.annotate(
+        member_count=Count('members', distinct=True),
+        document_count=Count('documents', distinct=True),
+    )
     data = TeamSerializer(teams, many=True).data
     set_cached(key, data, ttl=600)
     return Response(data)
@@ -203,7 +206,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         qs = Document.objects.select_related('owner', 'folder', 'folder__parent', 'folder__parent__parent').prefetch_related('tags')
         scope = self.request.query_params.get('scope', 'mine')
         if scope == 'team' and self.request.user.team:
-            qs = qs.filter(team=self.request.user.team)
+            qs = qs.filter(team=self.request.user.team, is_private=False)
         else:
             qs = qs.filter(owner=self.request.user)
         return qs
@@ -274,6 +277,12 @@ class DocumentViewSet(viewsets.ModelViewSet):
         invalidate_docs(self.request.user.id, getattr(self.request.user, 'team_id', None))
 
     def perform_update(self, serializer):
+        if 'team' in serializer.validated_data:
+            new_team = serializer.validated_data['team']
+            if new_team is not None and self.request.user.role != 'admin':
+                if new_team.id != self.request.user.team_id:
+                    from rest_framework.exceptions import PermissionDenied
+                    raise PermissionDenied("You can only assign documents to your own team")
         serializer.save()
         invalidate_docs(self.request.user.id, getattr(self.request.user, 'team_id', None))
 
@@ -359,7 +368,10 @@ def admin_users(request):
     cached = get_cached(key)
     if cached:
         return Response(cached)
-    users = User.objects.select_related('team').all()
+    users = User.objects.select_related('team').annotate(
+        document_count=Count('documents', distinct=True),
+        analyzed_count=Count('documents', filter=Q(documents__ai_analysis__isnull=False), distinct=True),
+    ).all()
     data = UserSerializer(users, many=True).data
     set_cached(key, data, ttl=60)
     return Response(data)
@@ -426,9 +438,25 @@ def admin_delete_user(request, user_id):
 
 # --- Team Join / Leave Views ---
 
-@api_view(['POST'])
+@api_view(['GET', 'POST', 'DELETE'])
 def team_join_request(request):
-    """Any authenticated user can request to join a team."""
+    """Manage the current user's join requests."""
+    if request.method == 'GET':
+        reqs = TeamJoinRequest.objects.filter(user=request.user, status='pending').select_related('team')
+        return Response(TeamJoinRequestSerializer(reqs, many=True).data)
+
+    if request.method == 'DELETE':
+        team_id = request.data.get('team_id')
+        if not team_id:
+            return Response({'error': 'team_id required'}, status=400)
+        try:
+            req = TeamJoinRequest.objects.get(user=request.user, team_id=team_id, status='pending')
+            req.delete()
+            return Response({'message': 'Request cancelled'})
+        except TeamJoinRequest.DoesNotExist:
+            return Response({'error': 'No pending request found for this team'}, status=404)
+
+    # POST — create a new join request
     team_id = request.data.get('team_id')
     if not team_id:
         return Response({'error': 'team_id required'}, status=400)
@@ -521,3 +549,77 @@ def team_members(request, team_id):
         return Response({'error': 'Not authorized'}, status=403)
     members = User.objects.filter(team_id=team_id).select_related('team')
     return Response(UserSerializer(members, many=True).data)
+
+
+# --- Admin Application Views ---
+
+@api_view(['GET', 'POST', 'DELETE'])
+def admin_apply(request):
+    """Any non-admin user can apply for admin role."""
+    if request.method == 'GET':
+        try:
+            req = AdminRequest.objects.get(user=request.user)
+            return Response(AdminRequestSerializer(req).data)
+        except AdminRequest.DoesNotExist:
+            return Response({})
+
+    if request.method == 'DELETE':
+        try:
+            req = AdminRequest.objects.get(user=request.user, status='pending')
+            req.delete()
+            return Response({'message': 'Application withdrawn'})
+        except AdminRequest.DoesNotExist:
+            return Response({'error': 'No pending application'}, status=404)
+
+    # POST — apply for admin
+    if request.user.role == 'admin':
+        return Response({'error': 'You are already an admin'}, status=400)
+
+    try:
+        req = AdminRequest.objects.get(user=request.user)
+        if req.status == 'pending':
+            return Response({'error': 'You already have a pending application'}, status=400)
+        req.status = 'pending'
+        req.resolved_at = None
+        req.save()
+    except AdminRequest.DoesNotExist:
+        req = AdminRequest.objects.create(user=request.user)
+
+    return Response(AdminRequestSerializer(req).data, status=201)
+
+
+@api_view(['GET'])
+def admin_applications_list(request):
+    """List pending admin applications. Admin only."""
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin only'}, status=403)
+    apps = AdminRequest.objects.filter(status='pending').select_related('user')
+    return Response(AdminRequestSerializer(apps, many=True).data)
+
+
+@api_view(['POST'])
+def admin_application_resolve(request, application_id):
+    """Approve or reject an admin application. Admin only."""
+    if request.user.role != 'admin':
+        return Response({'error': 'Admin only'}, status=403)
+
+    action = request.data.get('action')
+    if action not in ('approve', 'reject'):
+        return Response({'error': "action must be 'approve' or 'reject'"}, status=400)
+
+    try:
+        app = AdminRequest.objects.select_related('user').get(pk=application_id)
+    except AdminRequest.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+
+    from django.utils import timezone
+    app.status = 'approved' if action == 'approve' else 'rejected'
+    app.resolved_at = timezone.now()
+    app.save()
+
+    if action == 'approve':
+        app.user.role = 'admin'
+        app.user.save()
+        invalidate_user(app.user.id)
+
+    return Response(AdminRequestSerializer(app).data)

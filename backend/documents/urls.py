@@ -21,5 +21,8 @@ urlpatterns = [
     path('admin/users/', views.admin_users),
     path('admin/users/<int:user_id>/', views.admin_update_user),
     path('admin/users/<int:user_id>/delete/', views.admin_delete_user),
+    path('admin/apply/', views.admin_apply),
+    path('admin/applications/', views.admin_applications_list),
+    path('admin/applications/<int:application_id>/resolve/', views.admin_application_resolve),
     path('', include(router.urls)),
 ]

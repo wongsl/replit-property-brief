@@ -8,14 +8,19 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { 
+import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
-  ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2
+  ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
+  EyeOff, Lock
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import {
   DndContext, closestCenter, pointerWithin, rectIntersection, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDroppable,
@@ -87,9 +92,12 @@ export default function DashboardPage() {
   const { user, decrementRateLimit, rateLimitRemaining, resetRateLimit } = useAuth();
   const [documents, setDocuments] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
+  const [teams, setTeams] = useState<{id: number, name: string}[]>([]);
   const [activeTab, setActiveTab] = useState("my-files");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
+  const [uploadPrivate, setUploadPrivate] = useState(false);
   const [selectedFile, setSelectedFile] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [groupBy, setGroupBy] = useState(true);
@@ -144,6 +152,10 @@ export default function DashboardPage() {
   };
 
   useEffect(() => { loadData(); }, [activeTab]);
+
+  useEffect(() => {
+    apiFetch('/api/teams/').then(r => r.ok ? r.json() : []).then(setTeams).catch(() => {});
+  }, []);
 
   const handleCreateGroup = async (parentId?: number) => {
     const name = parentId ? subfolderName.trim() : newGroupName.trim();
@@ -245,8 +257,9 @@ export default function DashboardPage() {
     return { matchedFolder: null, suggestedName: "" };
   };
 
-  const handleUpload = async () => {
+  const handleUpload = async (isPrivate = false) => {
     if (!decrementRateLimit()) return;
+    setShowUploadDialog(false);
     const input = document.createElement('input');
     input.type = 'file';
     input.onchange = async (e: any) => {
@@ -287,6 +300,7 @@ export default function DashboardPage() {
             name: file.name,
             storage_path: objectPath,
             file_size: file.size,
+            is_private: isPrivate,
           }),
         });
 
@@ -349,6 +363,22 @@ export default function DashboardPage() {
       body: JSON.stringify({ parent: newParentId === null ? '' : newParentId }),
     });
     if (res.ok) loadData();
+  };
+
+  const handleChangeTeam = async (docId: number, teamId: number | null) => {
+    await apiFetch(`/api/documents/${docId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify({ team: teamId }),
+    });
+    loadData();
+  };
+
+  const handleTogglePrivate = async (docId: number, currentlyPrivate: boolean) => {
+    await apiFetch(`/api/documents/${docId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_private: !currentlyPrivate }),
+    });
+    loadData();
   };
 
   const toggleGroupCollapse = (key: string) => {
@@ -477,6 +507,7 @@ export default function DashboardPage() {
     flatFolders, handleMoveToFolder,
     handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining,
     expandedAnalysis, toggleAnalysisExpanded,
+    teams, handleChangeTeam, handleTogglePrivate,
   };
 
   const countDocsInTree = (folder: any): number => {
@@ -498,7 +529,7 @@ export default function DashboardPage() {
           <Button variant="outline" onClick={resetRateLimit} data-testid="button-reset-quota">
             <RefreshCw className="mr-2 h-4 w-4" />Reset Quota
           </Button>
-          <Button onClick={handleUpload} disabled={isUploading || rateLimitRemaining <= 0} data-testid="button-upload">
+          <Button onClick={() => { setUploadPrivate(false); setShowUploadDialog(true); }} disabled={isUploading || rateLimitRemaining <= 0} data-testid="button-upload">
             <UploadCloud className="mr-2 h-4 w-4" />{isUploading ? "Uploading..." : "Upload File"}
           </Button>
         </div>
@@ -634,6 +665,46 @@ export default function DashboardPage() {
           })() : null}
         </DragOverlay>
       </DndContext>
+
+      <Dialog open={showUploadDialog} onOpenChange={setShowUploadDialog}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Upload File</DialogTitle>
+            <DialogDescription>Choose your privacy setting before selecting a file.</DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-3">
+            {user?.team ? (
+              <button
+                onClick={() => setUploadPrivate(!uploadPrivate)}
+                className={`w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-colors ${uploadPrivate ? 'border-orange-400/50 bg-orange-500/10' : 'border-primary/30 bg-primary/5 hover:bg-primary/10'}`}
+              >
+                {uploadPrivate
+                  ? <Lock className="h-5 w-5 text-orange-500 shrink-0" />
+                  : <Users className="h-5 w-5 text-primary shrink-0" />}
+                <div>
+                  <p className="text-sm font-medium">{uploadPrivate ? 'Private (only you)' : `Shared with ${user.team_name || 'team'}`}</p>
+                  <p className="text-xs text-muted-foreground">{uploadPrivate ? 'Hidden from team view' : 'Visible in Team Files'}</p>
+                </div>
+                <span className="ml-auto text-xs text-muted-foreground">click to toggle</span>
+              </button>
+            ) : (
+              <div className="flex items-center gap-3 rounded-lg border p-3 text-muted-foreground">
+                <Lock className="h-5 w-5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium">Private (only you)</p>
+                  <p className="text-xs">You are not in a team</p>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowUploadDialog(false)}>Cancel</Button>
+            <Button onClick={() => handleUpload(uploadPrivate)}>
+              <UploadCloud className="mr-2 h-4 w-4" />Choose File
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -791,7 +862,7 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
   );
 }
 
-function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, depth = 0 }: any) {
+function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, depth = 0 }: any) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: file.id });
   const [newTag, setNewTag] = useState("");
   const isEditing = editingFileId === file.id;
@@ -816,6 +887,11 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
             ) : (
               <span className="cursor-pointer hover:underline" onClick={() => { setEditingFileId(file.id); setTempFileName(file.name); }}>
                 {file.name}
+              </span>
+            )}
+            {file.is_private && (
+              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 h-5 rounded-full border border-orange-400/40 bg-orange-500/10 text-orange-500">
+                <Lock className="h-2.5 w-2.5" />Private
               </span>
             )}
             {hasAnalysis && (
@@ -875,6 +951,31 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
               <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => handleTogglePrivate(file.id, file.is_private)}>
+                  {file.is_private
+                    ? <><Users className="mr-2 h-4 w-4" />Share with team</>
+                    : <><EyeOff className="mr-2 h-4 w-4" />Hide from team</>}
+                </DropdownMenuItem>
+                {(() => {
+                  const availableTeams = user?.role === 'admin' ? teams : teams.filter((t: any) => t.id === user?.team);
+                  if (availableTeams.length === 0) return null;
+                  return (
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>
+                        <Users className="mr-2 h-4 w-4" />Change Team
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
+                        {file.team !== null && (
+                          <DropdownMenuItem onClick={() => handleChangeTeam(file.id, null)}>No Team</DropdownMenuItem>
+                        )}
+                        {availableTeams.filter((t: any) => t.id !== file.team).map((t: any) => (
+                          <DropdownMenuItem key={t.id} onClick={() => handleChangeTeam(file.id, t.id)}>{t.name}</DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  );
+                })()}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive" onClick={async () => {
                   await apiFetch(`/api/documents/${file.id}/`, { method: 'DELETE' });

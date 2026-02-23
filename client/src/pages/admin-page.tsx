@@ -5,7 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
-  Users, Activity, ShieldAlert, Settings, MoreVertical, Trash2, UserCog
+  Users, Activity, ShieldAlert, Settings, MoreVertical, Trash2, UserCog, FileText, BarChart2,
+  CheckCircle, XCircle, ShieldCheck
 } from "lucide-react";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -34,6 +35,7 @@ export default function AdminPage() {
   const { user } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
   const [teams, setTeams] = useState<any[]>([]);
+  const [adminApplications, setAdminApplications] = useState<any[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -43,12 +45,30 @@ export default function AdminPage() {
     });
   };
 
+  const loadApplications = () => {
+    apiFetch('/api/admin/applications/').then(async (res) => {
+      if (res.ok) setAdminApplications(await res.json());
+    });
+  };
+
   useEffect(() => {
     loadUsers();
+    loadApplications();
     apiFetch('/api/teams/').then(async (res) => {
       if (res.ok) setTeams(await res.json());
     });
   }, []);
+
+  const handleResolveApplication = async (appId: number, action: 'approve' | 'reject') => {
+    const res = await apiFetch(`/api/admin/applications/${appId}/resolve/`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+    if (res.ok) {
+      setAdminApplications(prev => prev.filter(a => a.id !== appId));
+      if (action === 'approve') loadUsers();
+    }
+  };
 
   if (user?.role !== "admin") {
     return <Redirect to="/dashboard" />;
@@ -145,6 +165,52 @@ export default function AdminPage() {
         </Card>
       </div>
 
+      {adminApplications.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ShieldCheck className="h-5 w-5" />
+              Admin Applications
+              <Badge className="ml-1 h-5 px-1.5 text-xs">{adminApplications.length}</Badge>
+            </CardTitle>
+            <CardDescription>Users requesting admin privileges.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>User</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Requested</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {adminApplications.map((app) => (
+                  <TableRow key={app.id}>
+                    <TableCell className="font-medium">{app.username}</TableCell>
+                    <TableCell className="text-muted-foreground text-sm">{app.email || <span className="italic">—</span>}</TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {new Date(app.requested_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" variant="default" onClick={() => handleResolveApplication(app.id, 'approve')}>
+                          <CheckCircle className="mr-1 h-3.5 w-3.5" />Approve
+                        </Button>
+                        <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => handleResolveApplication(app.id, 'reject')}>
+                          <XCircle className="mr-1 h-3.5 w-3.5" />Reject
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>User Management</CardTitle>
@@ -158,6 +224,8 @@ export default function AdminPage() {
                 <TableHead>Email</TableHead>
                 <TableHead>Role</TableHead>
                 <TableHead>Team</TableHead>
+                <TableHead className="text-right">Files</TableHead>
+                <TableHead className="text-right">Analyzed</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -170,6 +238,8 @@ export default function AdminPage() {
                     <Badge variant="outline" className="capitalize">{roleLabel(u.role)}</Badge>
                   </TableCell>
                   <TableCell className="text-muted-foreground">{u.team_name || "No team"}</TableCell>
+                  <TableCell className="text-right font-medium">{u.document_count ?? 0}</TableCell>
+                  <TableCell className="text-right font-medium">{u.analyzed_count ?? 0}</TableCell>
                   <TableCell className="text-right">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -235,7 +305,37 @@ export default function AdminPage() {
                 </TableRow>
               ))}
               {users.length === 0 && (
-                <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">No users found</TableCell></TableRow>
+                <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">No users found</TableCell></TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Team File Stats</CardTitle>
+          <CardDescription>Number of files accessible to each team.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Team</TableHead>
+                <TableHead className="text-right">Members</TableHead>
+                <TableHead className="text-right">Team Files</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {teams.map((t) => (
+                <TableRow key={t.id}>
+                  <TableCell className="font-medium">{t.name}</TableCell>
+                  <TableCell className="text-right">{t.member_count ?? 0}</TableCell>
+                  <TableCell className="text-right font-medium">{t.document_count ?? 0}</TableCell>
+                </TableRow>
+              ))}
+              {teams.length === 0 && (
+                <TableRow><TableCell colSpan={3} className="text-center text-muted-foreground py-8">No teams found</TableCell></TableRow>
               )}
             </TableBody>
           </Table>

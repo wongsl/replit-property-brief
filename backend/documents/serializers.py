@@ -1,21 +1,24 @@
 from rest_framework import serializers
-from .models import User, Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest
+from .models import User, Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest
 
 
 class TeamSerializer(serializers.ModelSerializer):
     member_count = serializers.IntegerField(read_only=True, default=0)
+    document_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Team
-        fields = ['id', 'name', 'member_count']
+        fields = ['id', 'name', 'member_count', 'document_count']
 
 
 class UserSerializer(serializers.ModelSerializer):
     team_name = serializers.CharField(source='team.name', read_only=True, default=None)
+    document_count = serializers.IntegerField(read_only=True, default=0)
+    analyzed_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'role', 'team', 'team_name']
+        fields = ['id', 'username', 'email', 'role', 'team', 'team_name', 'document_count', 'analyzed_count']
 
 
 class TagSerializer(serializers.ModelSerializer):
@@ -68,10 +71,20 @@ class DocumentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'file', 'storage_path', 'file_type', 'file_size', 'status',
             'owner', 'owner_name', 'team', 'folder', 'folder_name',
-            'tags', 'tag_names', 'position', 'ai_score', 'ai_analysis',
+            'tags', 'tag_names', 'position', 'is_private', 'ai_score', 'ai_analysis',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['owner', 'owner_name', 'file_size', 'status']
+
+
+class AdminRequestSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    email = serializers.CharField(source='user.email', read_only=True)
+
+    class Meta:
+        model = AdminRequest
+        fields = ['id', 'user', 'username', 'email', 'status', 'requested_at', 'resolved_at']
+        read_only_fields = ['user', 'username', 'email', 'status', 'requested_at', 'resolved_at']
 
 
 class TeamJoinRequestSerializer(serializers.ModelSerializer):

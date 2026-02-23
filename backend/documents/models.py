@@ -73,6 +73,7 @@ class Document(models.Model):
     folder = models.ForeignKey(Folder, on_delete=models.SET_NULL, null=True, blank=True, related_name='documents')
     tags = models.ManyToManyField(Tag, blank=True, related_name='documents')
     position = models.IntegerField(default=0)
+    is_private = models.BooleanField(default=False)
     ai_score = models.IntegerField(null=True, blank=True)
     ai_analysis = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -100,6 +101,20 @@ class TeamJoinRequest(models.Model):
 
     def __str__(self):
         return f'{self.user.username} → {self.team.name} ({self.status})'
+
+
+class AdminRequest(models.Model):
+    STATUS_CHOICES = [('pending', 'Pending'), ('approved', 'Approved'), ('rejected', 'Rejected')]
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='admin_request')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+    requested_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'admin_requests'
+
+    def __str__(self):
+        return f'{self.user.username} admin request ({self.status})'
 
 
 class DocumentPermission(models.Model):
