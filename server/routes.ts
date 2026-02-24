@@ -4,7 +4,7 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 import { spawn } from "child_process";
 import { log } from "./index";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
-import { registerAnalyzeRoutes } from "./analyze";
+import { registerAnalyzeRoutes, registerFolderCombinedAnalysisRoute } from "./analyze";
 import * as path from "path";
 
 function startDjango(): Promise<void> {
@@ -58,6 +58,7 @@ export async function registerRoutes(
 
   registerObjectStorageRoutes(app);
   registerAnalyzeRoutes(app);
+  registerFolderCombinedAnalysisRoute(app);
 
   const djangoProxy = createProxyMiddleware({
     target: "http://127.0.0.1:8000",
@@ -69,6 +70,9 @@ export async function registerRoutes(
       return next();
     }
     if (req.originalUrl.match(/^\/api\/documents\/\d+\/analyze\/?$/)) {
+      return next();
+    }
+    if (req.originalUrl.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/)) {
       return next();
     }
     req.url = `/api${req.url}`;

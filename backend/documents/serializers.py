@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest
+from .models import User, Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest, CombinedAnalysis
 
 
 class TeamSerializer(serializers.ModelSerializer):
@@ -36,15 +36,31 @@ class DocumentPermissionSerializer(serializers.ModelSerializer):
         fields = ['id', 'document', 'user', 'team', 'permission', 'username', 'team_name']
 
 
+class CombinedAnalysisSerializer(serializers.ModelSerializer):
+    source_document_ids = serializers.PrimaryKeyRelatedField(
+        source='source_documents', many=True, read_only=True
+    )
+    source_document_names = serializers.SerializerMethodField()
+
+    def get_source_document_names(self, obj):
+        return [{'id': d.id, 'name': d.name} for d in obj.source_documents.all()]
+
+    class Meta:
+        model = CombinedAnalysis
+        fields = ['id', 'folder', 'owner', 'source_document_ids', 'source_document_names',
+                  'combined_analysis', 'created_at']
+
+
 class FolderSerializer(serializers.ModelSerializer):
     document_count = serializers.IntegerField(read_only=True, default=0)
     parent_name = serializers.CharField(source='parent.name', read_only=True, default=None)
     full_path = serializers.CharField(read_only=True)
     children = serializers.SerializerMethodField()
+    combined_analyses = CombinedAnalysisSerializer(many=True, read_only=True)
 
     class Meta:
         model = Folder
-        fields = ['id', 'name', 'parent', 'parent_name', 'full_path', 'owner', 'team', 'position', 'created_at', 'document_count', 'children']
+        fields = ['id', 'name', 'parent', 'parent_name', 'full_path', 'owner', 'team', 'position', 'created_at', 'document_count', 'children', 'combined_analyses']
         read_only_fields = ['owner']
 
     def get_children(self, obj):

@@ -6,11 +6,12 @@ from django.contrib.auth.hashers import make_password, check_password
 from django.db import transaction as db_transaction
 from django.db.models import Count, Q
 from django.utils import timezone
-from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest
+from django.shortcuts import get_object_or_404
+from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest, CombinedAnalysis
 from .serializers import (
     UserSerializer, TeamSerializer, FolderSerializer, TagSerializer,
     DocumentSerializer, DocumentPermissionSerializer, TeamJoinRequestSerializer, AdminRequestSerializer,
-    CreditTransactionSerializer, CreditRequestSerializer
+    CreditTransactionSerializer, CreditRequestSerializer, CombinedAnalysisSerializer
 )
 from .cache_utils import (
     get_cached, set_cached, _docs_key, _folders_key, _teams_key,
@@ -128,7 +129,8 @@ class FolderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Folder.objects.filter(owner=self.request.user).select_related('parent').prefetch_related(
-            'children', 'children__children', 'children__children__children'
+            'children', 'children__children', 'children__children__children',
+            'combined_analyses', 'combined_analyses__source_documents',
         ).annotate(
             document_count=Count('documents')
         )
@@ -779,3 +781,56 @@ def admin_grant_credits(request, user_id):
     invalidate_user(target_user.id)
 
     return Response({'credits': target_user.credits})
+
+
+# --- Combined Analysis Views ---
+
+class CombinedAnalysisViewSet(viewsets.ModelViewSet):
+    serializer_class = CombinedAnalysisSerializer
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
+
+    def get_queryset(self):
+        return CombinedAnalysis.objects.filter(owner=self.request.user).prefetch_related('source_documents')
+
+    @action(detail=False, methods=['post'], url_path='save')
+    def save_combined(self, request):
+        folder_id = request.data.get('folder_id')
+        document_ids = request.data.get('document_ids', [])
+        combined_analysis = request.data.get('combined_analysis')
+
+        if not folder_id or not combined_analysis:
+            return Response({'error': 'folder_id and combined_analysis are required'}, status=400)
+
+        folder = get_object_or_404(Folder, pk=folder_id, owner=request.user)
+        docs = Document.objects.filter(pk__in=document_ids, owner=request.user)
+        if docs.count() < 2:
+            return Response({'error': 'At least 2 documents required'}, status=400)
+
+        with db_transaction.atomic():
+            user = User.objects.select_for_update().get(pk=request.user.pk)
+            if user.credits < 1:
+                return Response({'error': 'Insufficient credits. Request more credits to continue analyzing.'}, status=402)
+            user.credits -= 1
+            user.save(update_fields=['credits'])
+            CreditTransaction.objects.create(
+                user=user,
+                type='folder_combine',
+                amount=-1,
+                note=f'Combined analysis of {docs.count()} documents in "{folder.name}"',
+            )
+
+        record = CombinedAnalysis.objects.create(
+            folder=folder,
+            owner=request.user,
+            combined_analysis=combined_analysis,
+        )
+        record.source_documents.set(docs)
+
+        invalidate_folders(request.user.id)
+        invalidate_user(request.user.id)
+        return Response(CombinedAnalysisSerializer(record).data, status=201)
+
+    def perform_destroy(self, instance):
+        folder_id = instance.folder_id
+        instance.delete()
+        invalidate_folders(self.request.user.id)

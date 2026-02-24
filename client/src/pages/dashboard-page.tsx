@@ -12,7 +12,7 @@ import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
   ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, Minus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
-  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote
+  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -89,6 +89,24 @@ function getDescendantIds(folder: any): number[] {
   return ids;
 }
 
+function addCombinedAnalysisToFolder(folder: any, targetFolderId: number, record: any): any {
+  if (folder.id === targetFolderId) {
+    return { ...folder, combined_analyses: [...(folder.combined_analyses || []), record] };
+  }
+  if (folder.children) {
+    return { ...folder, children: folder.children.map((c: any) => addCombinedAnalysisToFolder(c, targetFolderId, record)) };
+  }
+  return folder;
+}
+
+function removeCombinedAnalysisFromFolder(folder: any, recordId: number): any {
+  return {
+    ...folder,
+    combined_analyses: (folder.combined_analyses || []).filter((ca: any) => ca.id !== recordId),
+    children: (folder.children || []).map((c: any) => removeCombinedAnalysisFromFolder(c, recordId)),
+  };
+}
+
 export default function DashboardPage() {
   const { user, refreshUser, decrementRateLimit, rateLimitRemaining, resetRateLimit } = useAuth();
   const { toast } = useToast();
@@ -118,6 +136,9 @@ export default function DashboardPage() {
   const [creditRequestAmount, setCreditRequestAmount] = useState(5);
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set());
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<number>>(new Set());
+  const [isCombining, setIsCombining] = useState(false);
+  const [expandedCombinedAnalyses, setExpandedCombinedAnalyses] = useState<Set<number>>(new Set());
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -534,6 +555,71 @@ export default function DashboardPage() {
     });
   };
 
+  const toggleDocSelection = (docId: number) => {
+    setSelectedDocIds(prev => {
+      const next = new Set(prev);
+      if (next.has(docId)) next.delete(docId);
+      else next.add(docId);
+      return next;
+    });
+  };
+
+  const toggleCombinedExpanded = (recordId: number) => {
+    setExpandedCombinedAnalyses(prev => {
+      const next = new Set(prev);
+      if (next.has(recordId)) next.delete(recordId);
+      else next.add(recordId);
+      return next;
+    });
+  };
+
+  const handleCombineAnalysis = async () => {
+    const ids = Array.from(selectedDocIds);
+    if (ids.length < 2) return;
+
+    const selected = documents.filter(d => ids.includes(d.id));
+    const folderIds = Array.from(new Set(selected.map((d: any) => d.folder).filter(Boolean)));
+    if (folderIds.length !== 1) {
+      toast({ title: "Select documents from the same folder", description: "All selected documents must be in the same folder.", variant: "destructive" });
+      return;
+    }
+    if ((user?.credits ?? 0) < 1) {
+      toast({ title: "No credits remaining", description: "Request more credits on the Teams page.", variant: "destructive" });
+      return;
+    }
+
+    setIsCombining(true);
+    try {
+      const res = await apiFetch(`/api/folders/${folderIds[0]}/combined-analysis/`, {
+        method: 'POST',
+        body: JSON.stringify({ document_ids: ids }),
+      });
+      if (res.ok) {
+        const record = await res.json();
+        setFolders(prev => prev.map(f => addCombinedAnalysisToFolder(f, folderIds[0] as number, record)));
+        setSelectedDocIds(new Set());
+        setExpandedCombinedAnalyses(prev => new Set(prev).add(record.id));
+        await refreshUser();
+        toast({ title: "Combined analysis created" });
+      } else if (res.status === 402) {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: "No credits remaining", description: err.error, variant: "destructive" });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: "Could not combine analyses", description: err.error || "Please try again.", variant: "destructive" });
+      }
+    } finally {
+      setIsCombining(false);
+    }
+  };
+
+  const handleDeleteCombinedAnalysis = async (recordId: number) => {
+    const res = await apiFetch(`/api/combined-analyses/${recordId}/`, { method: 'DELETE' });
+    if (res.ok || res.status === 204) {
+      setFolders(prev => prev.map(f => removeCombinedAnalysisFromFolder(f, recordId)));
+    }
+  };
+
   const getSortValue = (doc: any, key: string) => {
     if (key.startsWith('ai_analysis.')) {
       const field = key.slice('ai_analysis.'.length);
@@ -604,6 +690,8 @@ export default function DashboardPage() {
     teams, handleChangeTeam, handleTogglePrivate, handleToggleFavorite,
     expandedNotes, toggleNotesExpanded, handleSaveNote,
     userCredits: user?.credits ?? 0,
+    selectedDocIds, toggleDocSelection,
+    expandedCombinedAnalyses, toggleCombinedExpanded, handleDeleteCombinedAnalysis,
   };
 
   const countDocsInTree = (folder: any): number => {
@@ -668,6 +756,32 @@ export default function DashboardPage() {
           <Input placeholder="Search files, folders, tags, city, county, address..." className="pl-9 bg-card" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} data-testid="input-search" />
         </div>
       </div>
+
+      {selectedDocIds.size >= 2 && (
+        <div className="flex items-center gap-3 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-2.5">
+          <Layers className="h-4 w-4 text-indigo-500 shrink-0" />
+          <span className="text-sm font-medium text-indigo-600">{selectedDocIds.size} documents selected</span>
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => setSelectedDocIds(new Set())}
+            >
+              Clear
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+              onClick={handleCombineAnalysis}
+              disabled={isCombining}
+            >
+              {isCombining ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Layers className="h-3 w-3" />}
+              {isCombining ? "Combining..." : "Combine Analysis"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       <DndContext sensors={sensors} collisionDetection={customCollisionDetection} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={() => { setActiveDragId(null); setDragOverFolderId(null); }}>
         <Card className="overflow-hidden">
@@ -1017,6 +1131,15 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
               {...fileRowProps}
             />
           ))}
+          {(folder.combined_analyses || []).map((ca: any) => (
+            <CombinedAnalysisRow
+              key={`ca-${ca.id}`}
+              record={ca}
+              expandedCombinedAnalyses={fileRowProps.expandedCombinedAnalyses}
+              toggleCombinedExpanded={fileRowProps.toggleCombinedExpanded}
+              handleDeleteCombinedAnalysis={fileRowProps.handleDeleteCombinedAnalysis}
+            />
+          ))}
           {docs.map((file: any) => (
             <FileRow key={file.id} file={file} depth={depth} {...fileRowProps} />
           ))}
@@ -1026,7 +1149,78 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
   );
 }
 
-function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, handleToggleFavorite, expandedNotes, toggleNotesExpanded, handleSaveNote, userCredits = 0, depth = 0 }: any) {
+function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedExpanded, handleDeleteCombinedAnalysis }: any) {
+  const isExpanded = expandedCombinedAnalyses?.has(record.id);
+  const ca = record.combined_analysis || {};
+  const address = [ca.addressNumber, ca.streetName, ca.suffix].filter(Boolean).join(' ');
+  const location = [address, ca.city, ca.zipcode].filter(Boolean).join(', ');
+  const sources: any[] = ca.sources || record.source_document_names?.map((d: any) => ({ fileName: d.name })) || [];
+
+  return (
+    <React.Fragment>
+      <TableRow className={cn("bg-indigo-500/5 hover:bg-indigo-500/10 border-l-2 border-l-indigo-400", isExpanded && "border-b-0")}>
+        <TableCell>
+          <Layers className="h-4 w-4 text-indigo-400 mx-auto" />
+        </TableCell>
+        <TableCell className="font-medium" colSpan={2}>
+          <div className="flex items-center gap-2">
+            <div className="flex flex-col">
+              <span className="text-xs font-semibold text-indigo-600">Combined Analysis</span>
+              {location && <span className="text-[10px] text-muted-foreground leading-tight">{location}</span>}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1 px-2 text-[10px] bg-indigo-500/10 text-indigo-600 hover:bg-indigo-500/20 border border-indigo-500/20 rounded-full"
+              onClick={() => toggleCombinedExpanded(record.id)}
+            >
+              {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              <Sparkles className="h-3 w-3" />View
+            </Button>
+          </div>
+        </TableCell>
+        <TableCell colSpan={3}>
+          <div className="flex flex-wrap gap-1">
+            {sources.map((s: any, i: number) => (
+              <Badge key={i} variant="secondary" className="text-[10px] bg-indigo-500/10 text-indigo-600 border-indigo-500/20">
+                {s.document_type || s.fileName || `Doc ${i + 1}`}
+              </Badge>
+            ))}
+          </div>
+        </TableCell>
+        <TableCell className="text-xs text-muted-foreground">{ca.inspection_date || '--'}</TableCell>
+        <TableCell></TableCell>
+        <TableCell className="text-right">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-destructive hover:text-destructive"
+            onClick={() => handleDeleteCombinedAnalysis(record.id)}
+            title="Delete combined analysis"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </TableCell>
+      </TableRow>
+      {isExpanded && (
+        <TableRow className="bg-indigo-500/5 hover:bg-indigo-500/5">
+          <TableCell colSpan={9} className="p-0">
+            <div className="px-6 py-4 max-h-[500px] overflow-auto space-y-3">
+              <AnalysisReport analysis={ca} />
+              {ca.conflict_notes && (
+                <div className="rounded-md border border-yellow-400/40 bg-yellow-500/10 px-4 py-3 text-xs text-yellow-700">
+                  <span className="font-semibold">Conflict notes: </span>{ca.conflict_notes}
+                </div>
+              )}
+            </div>
+          </TableCell>
+        </TableRow>
+      )}
+    </React.Fragment>
+  );
+}
+
+function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, handleToggleFavorite, expandedNotes, toggleNotesExpanded, handleSaveNote, userCredits = 0, depth = 0, selectedDocIds, toggleDocSelection }: any) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: file.id });
   const [newTag, setNewTag] = useState("");
   const [noteText, setNoteText] = useState(file.notes || "");
@@ -1045,10 +1239,19 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
 
   return (
     <React.Fragment>
-      <TableRow ref={setNodeRef} style={style} className={cn(isDragging && "bg-muted/20", (isExpanded || isNotesExpanded) && "border-b-0")}>
+      <TableRow ref={setNodeRef} style={style} className={cn(isDragging && "bg-muted/20", (isExpanded || isNotesExpanded) && "border-b-0", selectedDocIds?.has(file.id) && "bg-indigo-500/5")}>
         <TableCell>
-          <div {...attributes} {...listeners} className="cursor-grab p-1 hover:bg-muted rounded">
-            <GripVertical className="h-4 w-4 text-muted-foreground" />
+          <div className="flex items-center gap-0.5">
+            <input
+              type="checkbox"
+              checked={selectedDocIds?.has(file.id) ?? false}
+              onChange={() => toggleDocSelection?.(file.id)}
+              className="h-3.5 w-3.5 cursor-pointer accent-indigo-600"
+              title="Select for combined analysis"
+            />
+            <div {...attributes} {...listeners} className="cursor-grab p-1 hover:bg-muted rounded">
+              <GripVertical className="h-4 w-4 text-muted-foreground" />
+            </div>
           </div>
         </TableCell>
         <TableCell className="font-medium">

@@ -8,6 +8,13 @@ import { ObjectStorageService } from "./replit_integrations/object_storage/objec
 import { s3Client, S3FileRef } from "./replit_integrations/object_storage/s3Client";
 import { log } from "./index";
 
+function makePerplexityClient(): OpenAI {
+  return new OpenAI({
+    apiKey: process.env.PERPLEXITY_API_KEY,
+    baseURL: "https://api.perplexity.ai",
+  });
+}
+
 const DOC_TYPES = [
   "Home Inspection Report",
   "Pest Inspection Report",
@@ -27,8 +34,9 @@ function buildSystemPrompt(): string {
   return (
     "You are an expert summarizer for real estate inspection reports. " +
     "Your only response should be a valid JSON object with the following top-level keys: " +
-    "fileName, summary, addressNumber, streetName, suffix, city, county, zipcode, and document_type. " +
+    "fileName, summary, addressNumber, streetName, suffix, city, county, zipcode, document_type, and inspection_date. " +
     `The value for \`document_type\` must be one of the following (classify the document accordingly): ${docTypes}. ` +
+    "The value for `inspection_date` must be the date the inspection or disclosure was performed, extracted from the document content. Format YYYY-MM-DD. Use null if not found. " +
     "The value for `summary` must be a nested JSON object with the following keys: Roof, Electrical, Plumbing, Permits, Foundation, Pest Inspection, HVAC, and Additional Notes. " +
     "Each of the categories Roof, Electrical, Plumbing, Foundation, HVAC should contain: " +
     "- condition: A short description of current working condition. " +
@@ -85,13 +93,132 @@ async function extractTextFromFile(
   }
 }
 
+function buildCombineSystemPrompt(): string {
+  return (
+    "You are an expert at merging multiple real estate inspection report analyses into a single unified analysis. " +
+    "You will receive a JSON array of individual document analyses. Each analysis has fields including: " +
+    "addressNumber, streetName, suffix, city, county, zipcode, document_type, inspection_date, fileName, and summary. " +
+    "Your task is to merge these into a single unified analysis JSON object. " +
+    "The output must have the following top-level keys: " +
+    "fileName, addressNumber, streetName, suffix, city, county, zipcode, document_type, inspection_date, summary, sources, conflict_notes. " +
+    'Set `document_type` to "Combined Analysis". ' +
+    "Set `inspection_date` to the date of the most recently dated source document (the latest inspection_date value among sources). " +
+    "Set `fileName` to 'Combined Analysis'. " +
+    "For `sources`, provide an array of objects, one per source document, each with: document_type, inspection_date, fileName. " +
+    "For `conflict_notes`, write a plain string describing any contradictions found between sources and which was preferred. " +
+    "When two sources conflict on a section, prefer the one with the later inspection_date. If dates are equal or null, note the conflict without failing. " +
+    "For the `summary` object, merge all sections (Roof, Electrical, Plumbing, Permits, Foundation, Pest Inspection, HVAC, Additional Notes) by combining findings from all sources. " +
+    "If a section appears in some documents but not others, still include it with whatever information is available. " +
+    "Do not include any commentary, markdown, or explanations — respond with a JSON object only. " +
+    "Ensure the JSON is properly formatted and valid. " +
+    "Ensure the JSON falls within the maximum token limit of 4000 tokens."
+  );
+}
+
+export function registerFolderCombinedAnalysisRoute(app: Express): void {
+  app.post("/api/folders/:id/combined-analysis/", async (req, res) => {
+    try {
+      const folderId = req.params.id;
+      const cookies = req.headers.cookie || "";
+      const requestId = (req as any).requestId ?? "-";
+      const { document_ids } = req.body as { document_ids: number[] };
+
+      if (!document_ids || !Array.isArray(document_ids) || document_ids.length < 2) {
+        return res.status(400).json({ error: "At least 2 document IDs are required" });
+      }
+
+      // Fetch all documents the user can see, then filter to selected IDs
+      const docsRes = await fetch(`http://127.0.0.1:8000/api/documents/`, {
+        headers: { Cookie: cookies, "X-Request-Id": requestId },
+      });
+
+      if (!docsRes.ok) {
+        return res.status(docsRes.status).json({ error: "Failed to fetch documents" });
+      }
+
+      const allDocs = (await docsRes.json()) as any[];
+      const selectedDocs = allDocs.filter((d: any) => document_ids.includes(d.id));
+
+      if (selectedDocs.length < 2) {
+        return res.status(400).json({ error: "Could not find the selected documents" });
+      }
+
+      // Validate all docs have a valid ai_analysis (not raw fallback)
+      const unanalyzed = selectedDocs.filter(
+        (d: any) => !d.ai_analysis || d.ai_analysis.raw_response !== undefined || !d.ai_analysis.summary
+      );
+      if (unanalyzed.length > 0) {
+        return res.status(400).json({
+          error: `Some documents have not been analyzed yet: ${unanalyzed.map((d: any) => d.name).join(", ")}`,
+        });
+      }
+
+      log(`Combining ${selectedDocs.length} documents for folder ${folderId}`, "analyze");
+
+      const perplexity = makePerplexityClient();
+
+      const analysesPayload = selectedDocs.map((d: any) => ({
+        ...d.ai_analysis,
+        fileName: d.name,
+      }));
+
+      const completion = await perplexity.chat.completions.create({
+        model: "sonar-pro",
+        messages: [
+          { role: "system", content: buildCombineSystemPrompt() },
+          {
+            role: "user",
+            content: `Merge these document analyses:\n\n${JSON.stringify(analysesPayload, null, 2)}`,
+          },
+        ],
+        max_tokens: 4000,
+      });
+
+      const rawContent = completion.choices[0]?.message?.content || "";
+
+      let combinedAnalysis: any;
+      try {
+        const cleaned = rawContent.replace(/^```json\s*/, "").replace(/```\s*$/, "").trim();
+        combinedAnalysis = JSON.parse(cleaned);
+      } catch {
+        log(`Failed to parse combined AI response as JSON`, "analyze");
+        return res.status(500).json({ error: "AI returned an invalid response. Please try again." });
+      }
+
+      // Save to Django — deducts 1 credit and persists the record
+      const saveRes = await fetch(`http://127.0.0.1:8000/api/combined-analyses/save/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: cookies,
+          "X-Request-Id": requestId,
+        },
+        body: JSON.stringify({
+          folder_id: parseInt(folderId, 10),
+          document_ids,
+          combined_analysis: combinedAnalysis,
+        }),
+      });
+
+      if (!saveRes.ok) {
+        const errData = await saveRes.json().catch(() => ({}));
+        log(`Failed to save combined analysis: ${saveRes.status}`, "analyze");
+        return res.status(saveRes.status).json(errData);
+      }
+
+      const record = await saveRes.json();
+      log(`Combined analysis saved for folder ${folderId}`, "analyze");
+      return res.status(201).json(record);
+    } catch (err: any) {
+      log(`Combined analysis error: ${err.message}`, "analyze");
+      return res.status(500).json({ error: "Combined analysis failed: " + err.message });
+    }
+  });
+}
+
 export function registerAnalyzeRoutes(app: Express): void {
   const objectStorageService = new ObjectStorageService();
-
-  const perplexity = new OpenAI({
-    apiKey: process.env.PERPLEXITY_API_KEY,
-    baseURL: "https://api.perplexity.ai",
-  });
+  const perplexity = makePerplexityClient();
 
   app.post("/api/documents/:id/analyze/", async (req, res) => {
     try {

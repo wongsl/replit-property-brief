@@ -6,6 +6,7 @@ router = DefaultRouter()
 router.register(r'folders', views.FolderViewSet, basename='folder')
 router.register(r'documents', views.DocumentViewSet, basename='document')
 router.register(r'permissions', views.DocumentPermissionViewSet, basename='permission')
+router.register(r'combined-analyses', views.CombinedAnalysisViewSet, basename='combined-analysis')
 
 urlpatterns = [
     path('auth/register/', views.register),

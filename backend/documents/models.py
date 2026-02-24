@@ -120,9 +120,25 @@ class AdminRequest(models.Model):
         return f'{self.user.username} admin request ({self.status})'
 
 
+class CombinedAnalysis(models.Model):
+    folder = models.ForeignKey(Folder, on_delete=models.CASCADE, related_name='combined_analyses')
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='combined_analyses')
+    source_documents = models.ManyToManyField(Document, related_name='combined_in')
+    combined_analysis = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'combined_analyses'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Combined analysis in "{self.folder.name}" ({self.created_at})'
+
+
 class CreditTransaction(models.Model):
     TYPE_CHOICES = [
         ('analyze', 'Document Analysis'),
+        ('folder_combine', 'Folder Combined Analysis'),
         ('admin_grant', 'Admin Grant'),
         ('request_approved', 'Request Approved'),
         ('refund', 'Refund'),
