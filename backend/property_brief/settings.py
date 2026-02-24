@@ -28,6 +28,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
+    'documents.middleware.RequestLoggingMiddleware',
 ]
 
 ROOT_URLCONF = 'property_brief.urls'
@@ -46,6 +47,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'EXCEPTION_HANDLER': 'documents.exceptions.custom_exception_handler',
 }
 
 CORS_ALLOWED_ORIGINS = [
@@ -74,6 +76,30 @@ CACHES = {
             'MAX_ENTRIES': 1000,
         },
     }
+}
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'api': {
+            'format': '{asctime} [django] {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'api',
+        },
+    },
+    'loggers': {
+        'api': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
 }
 
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'

@@ -17,6 +17,7 @@ from .cache_utils import (
     _user_key, _admin_users_key, invalidate_docs, invalidate_folders,
     invalidate_user, invalidate_teams, invalidate_all_for_user
 )
+from .permissions import IsAdmin, IsAdminOrTeamLeader
 
 User = get_user_model()
 
@@ -395,9 +396,8 @@ class DocumentPermissionViewSet(viewsets.ModelViewSet):
 # --- Admin views ---
 
 @api_view(['GET'])
+@permission_classes([IsAdmin])
 def admin_users(request):
-    if request.user.role != 'admin':
-        return Response({'error': 'Admin only'}, status=403)
     key = _admin_users_key()
     cached = get_cached(key)
     if cached:
@@ -412,9 +412,8 @@ def admin_users(request):
 
 
 @api_view(['PATCH'])
+@permission_classes([IsAdmin])
 def admin_update_user(request, user_id):
-    if request.user.role != 'admin':
-        return Response({'error': 'Admin only'}, status=403)
     try:
         user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
@@ -433,9 +432,8 @@ def admin_update_user(request, user_id):
 
 
 @api_view(['DELETE'])
+@permission_classes([IsAdmin])
 def admin_delete_user(request, user_id):
-    if request.user.role != 'admin':
-        return Response({'error': 'Admin only'}, status=403)
     try:
         target_user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
@@ -525,11 +523,9 @@ def team_join_request(request):
 
 
 @api_view(['GET'])
+@permission_classes([IsAdminOrTeamLeader])
 def team_join_requests_list(request):
     """Team leaders see pending requests for their team; admins see all."""
-    if request.user.role not in ('admin', 'team_leader'):
-        return Response({'error': 'Team leader or admin only'}, status=403)
-
     qs = TeamJoinRequest.objects.select_related('user', 'team').filter(status='pending')
     if request.user.role == 'team_leader':
         if not request.user.team_id:
@@ -539,11 +535,9 @@ def team_join_requests_list(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsAdminOrTeamLeader])
 def team_join_request_resolve(request, request_id):
     """Team leader approves or rejects a join request."""
-    if request.user.role not in ('admin', 'team_leader'):
-        return Response({'error': 'Team leader or admin only'}, status=403)
-
     action = request.data.get('action')
     if action not in ('approve', 'reject'):
         return Response({'error': "action must be 'approve' or 'reject'"}, status=400)
@@ -633,20 +627,17 @@ def admin_apply(request):
 
 
 @api_view(['GET'])
+@permission_classes([IsAdmin])
 def admin_applications_list(request):
     """List pending admin applications. Admin only."""
-    if request.user.role != 'admin':
-        return Response({'error': 'Admin only'}, status=403)
     apps = AdminRequest.objects.filter(status='pending').select_related('user')
     return Response(AdminRequestSerializer(apps, many=True).data)
 
 
 @api_view(['POST'])
+@permission_classes([IsAdmin])
 def admin_application_resolve(request, application_id):
     """Approve or reject an admin application. Admin only."""
-    if request.user.role != 'admin':
-        return Response({'error': 'Admin only'}, status=403)
-
     action = request.data.get('action')
     if action not in ('approve', 'reject'):
         return Response({'error': "action must be 'approve' or 'reject'"}, status=400)
@@ -714,20 +705,17 @@ def credit_request_cancel(request):
 
 
 @api_view(['GET'])
+@permission_classes([IsAdmin])
 def admin_credit_requests(request):
     """List all pending credit requests. Admin only."""
-    if request.user.role != 'admin':
-        return Response({'error': 'Admin only'}, status=403)
     reqs = CreditRequest.objects.filter(status='pending').select_related('user')
     return Response(CreditRequestSerializer(reqs, many=True).data)
 
 
 @api_view(['POST'])
+@permission_classes([IsAdmin])
 def admin_credit_request_resolve(request, request_id):
     """Approve or reject a credit request. Admin only."""
-    if request.user.role != 'admin':
-        return Response({'error': 'Admin only'}, status=403)
-
     resolve_action = request.data.get('action')
     if resolve_action not in ('approve', 'reject'):
         return Response({'error': "action must be 'approve' or 'reject'"}, status=400)
@@ -760,11 +748,9 @@ def admin_credit_request_resolve(request, request_id):
 
 
 @api_view(['POST'])
+@permission_classes([IsAdmin])
 def admin_grant_credits(request, user_id):
     """Admin grants credits directly to a user."""
-    if request.user.role != 'admin':
-        return Response({'error': 'Admin only'}, status=403)
-
     amount = request.data.get('amount')
     try:
         amount = int(amount)

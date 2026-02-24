@@ -1,4 +1,5 @@
 import express, { type Request, Response, NextFunction } from "express";
+import { randomUUID } from "crypto";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -11,6 +12,15 @@ declare module "http" {
     rawBody: unknown;
   }
 }
+
+// Request ID middleware — must be first so all downstream handlers and logs can use it
+app.use((req, res, next) => {
+  const requestId = (req.headers["x-request-id"] as string) || randomUUID();
+  req.headers["x-request-id"] = requestId; // forwarded to Django by the proxy automatically
+  res.setHeader("X-Request-Id", requestId);
+  (req as any).requestId = requestId;
+  next();
+});
 
 app.use((req, res, next) => {
   const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/);
@@ -48,23 +58,12 @@ export function log(message: string, source = "express") {
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
 
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
+      const requestId = (req as any).requestId ?? "-";
+      log(`[${requestId}] ${req.method} ${path} ${res.statusCode} in ${duration}ms`);
     }
   });
 
@@ -78,14 +77,15 @@ app.use((req, res, next) => {
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
+    const requestId = (_req as any).requestId ?? "-";
 
-    console.error("Internal Server Error:", err);
+    console.error(`[${requestId}] Internal Server Error:`, err);
 
     if (res.headersSent) {
       return next(err);
     }
 
-    return res.status(status).json({ message });
+    return res.status(status).json({ error: message, requestId });
   });
 
   // importantly only setup vite in development and after

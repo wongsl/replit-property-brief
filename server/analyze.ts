@@ -97,9 +97,10 @@ export function registerAnalyzeRoutes(app: Express): void {
     try {
       const docId = req.params.id;
       const cookies = req.headers.cookie || "";
+      const requestId = (req as any).requestId ?? "-";
 
       const docRes = await fetch(`http://127.0.0.1:8000/api/documents/${docId}/`, {
-        headers: { Cookie: cookies },
+        headers: { Cookie: cookies, "X-Request-Id": requestId },
       });
 
       if (!docRes.ok) {
@@ -167,6 +168,7 @@ export function registerAnalyzeRoutes(app: Express): void {
           headers: {
             "Content-Type": "application/json",
             Cookie: cookies,
+            "X-Request-Id": requestId,
           },
           body: JSON.stringify({
             ai_analysis: analysisJson,
