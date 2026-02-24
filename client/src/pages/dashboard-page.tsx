@@ -12,7 +12,7 @@ import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
   ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, Minus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
-  EyeOff, Lock, Coins
+  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -116,6 +116,8 @@ export default function DashboardPage() {
   const [showCreditsDialog, setShowCreditsDialog] = useState(false);
   const [myCreditRequest, setMyCreditRequest] = useState<any | null>(undefined);
   const [creditRequestAmount, setCreditRequestAmount] = useState(5);
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set());
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -429,6 +431,32 @@ export default function DashboardPage() {
     loadData();
   };
 
+  const toggleNotesExpanded = (docId: number) => {
+    setExpandedNotes(prev => {
+      const next = new Set(prev);
+      if (next.has(docId)) next.delete(docId); else next.add(docId);
+      return next;
+    });
+  };
+
+  const handleSaveNote = async (docId: number, notes: string) => {
+    const res = await apiFetch(`/api/documents/${docId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify({ notes }),
+    });
+    if (res.ok) {
+      setDocuments(prev => prev.map(d => d.id === docId ? { ...d, notes } : d));
+    }
+  };
+
+  const handleToggleFavorite = async (docId: number) => {
+    const res = await apiFetch(`/api/documents/${docId}/toggle_favorite/`, { method: 'POST' });
+    if (res.ok) {
+      const { is_favorited } = await res.json();
+      setDocuments(prev => prev.map(d => d.id === docId ? { ...d, is_favorited } : d));
+    }
+  };
+
   const toggleGroupCollapse = (key: string) => {
     setCollapsedGroups(prev => {
       const next = new Set(prev);
@@ -506,25 +534,43 @@ export default function DashboardPage() {
     });
   };
 
+  const getSortValue = (doc: any, key: string) => {
+    if (key.startsWith('ai_analysis.')) {
+      const field = key.slice('ai_analysis.'.length);
+      return doc.ai_analysis?.[field] ?? '';
+    }
+    return doc[key] ?? '';
+  };
+
   const filteredDocs = useMemo(() => {
     let docs = documents;
+    if (showFavoritesOnly) {
+      docs = docs.filter(d => d.is_favorited);
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      docs = docs.filter(d => 
-        d.name.toLowerCase().includes(q) ||
-        d.tags?.some((t: any) => t.name.toLowerCase().includes(q)) ||
-        d.folder_name?.toLowerCase().includes(q)
-      );
+      docs = docs.filter(d => {
+        const ai = d.ai_analysis;
+        return (
+          d.name.toLowerCase().includes(q) ||
+          d.tags?.some((t: any) => t.name.toLowerCase().includes(q)) ||
+          d.folder_name?.toLowerCase().includes(q) ||
+          ai?.city?.toLowerCase().includes(q) ||
+          ai?.county?.toLowerCase().includes(q) ||
+          ai?.streetName?.toLowerCase().includes(q) ||
+          [ai?.addressNumber, ai?.streetName, ai?.suffix].filter(Boolean).join(' ').toLowerCase().includes(q)
+        );
+      });
     }
     if (sortConfig) {
       docs = [...docs].sort((a: any, b: any) => {
-        const va = a[sortConfig.key] ?? '';
-        const vb = b[sortConfig.key] ?? '';
+        const va = getSortValue(a, sortConfig.key);
+        const vb = getSortValue(b, sortConfig.key);
         return sortConfig.direction === 'asc' ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
       });
     }
     return docs;
-  }, [documents, searchQuery, sortConfig]);
+  }, [documents, searchQuery, sortConfig, showFavoritesOnly]);
 
   const docsByFolder = useMemo(() => {
     const map: Record<number | string, any[]> = { unassigned: [] };
@@ -555,7 +601,8 @@ export default function DashboardPage() {
     flatFolders, handleMoveToFolder,
     handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining,
     expandedAnalysis, toggleAnalysisExpanded,
-    teams, handleChangeTeam, handleTogglePrivate,
+    teams, handleChangeTeam, handleTogglePrivate, handleToggleFavorite,
+    expandedNotes, toggleNotesExpanded, handleSaveNote,
     userCredits: user?.credits ?? 0,
   };
 
@@ -608,6 +655,9 @@ export default function DashboardPage() {
           <Button variant={groupBy ? "secondary" : "outline"} size="sm" className="gap-2" onClick={() => setGroupBy(!groupBy)}>
             <LayoutDashboard className="h-4 w-4" />{groupBy ? "Ungroup" : "Group Files"}
           </Button>
+          <Button variant={showFavoritesOnly ? "secondary" : "outline"} size="sm" className="gap-2" onClick={() => setShowFavoritesOnly(v => !v)}>
+            <Star className={`h-4 w-4 ${showFavoritesOnly ? 'fill-yellow-400 text-yellow-400' : ''}`} />Favorites
+          </Button>
           <div className="flex items-center gap-2 border-l pl-4">
             <Input placeholder="New Client Folder..." value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} className="h-8 w-40 text-xs" data-testid="input-new-folder" />
             <Button size="sm" variant="outline" className="h-8" onClick={() => handleCreateGroup()} data-testid="button-create-folder"><Plus className="h-4 w-4" /></Button>
@@ -615,7 +665,7 @@ export default function DashboardPage() {
         </div>
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search files, folders, or tags..." className="pl-9 bg-card" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} data-testid="input-search" />
+          <Input placeholder="Search files, folders, tags, city, county, address..." className="pl-9 bg-card" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} data-testid="input-search" />
         </div>
       </div>
 
@@ -627,8 +677,16 @@ export default function DashboardPage() {
                 <TableHead className="w-[40px]"></TableHead>
                 <TableHead className="cursor-pointer" onClick={() => handleSort('name')}>Name <ArrowUpDown className="inline h-3 w-3" /></TableHead>
                 <TableHead>Tags</TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('owner_name')}>Owner</TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('ai_score')}>Score</TableHead>
+                <TableHead className="cursor-pointer" onClick={() => handleSort('owner_name')}>Owner <ArrowUpDown className="inline h-3 w-3" /></TableHead>
+                <TableHead className="cursor-pointer" onClick={() => handleSort('ai_score')}>Score <ArrowUpDown className="inline h-3 w-3" /></TableHead>
+                <TableHead className="cursor-pointer" onClick={() => handleSort('ai_analysis.city')}>
+                  City {sortConfig?.key === 'ai_analysis.city' && <ArrowUpDown className="inline h-3 w-3 text-primary" />}
+                  {sortConfig?.key !== 'ai_analysis.city' && <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
+                </TableHead>
+                <TableHead className="cursor-pointer" onClick={() => handleSort('ai_analysis.county')}>
+                  County {sortConfig?.key === 'ai_analysis.county' && <ArrowUpDown className="inline h-3 w-3 text-primary" />}
+                  {sortConfig?.key !== 'ai_analysis.county' && <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
+                </TableHead>
                 <TableHead>Folder</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -662,7 +720,7 @@ export default function DashboardPage() {
                     <>
                       <TableRow className="bg-muted/40 border-b-2">
                         <TableCell></TableCell>
-                        <TableCell colSpan={6} className="py-2">
+                        <TableCell colSpan={8} className="py-2">
                           <div className="flex items-center gap-2">
                             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => toggleGroupCollapse('unassigned')}>
                               {collapsedGroups.has('unassigned') ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -687,7 +745,7 @@ export default function DashboardPage() {
                 </SortableContext>
               )}
               {filteredDocs.length === 0 && (
-                <TableRow><TableCell colSpan={7} className="h-32 text-center text-muted-foreground">No documents found.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={9} className="h-32 text-center text-muted-foreground">No documents found.</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
@@ -858,7 +916,7 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
             </div>
           )}
         </TableCell>
-        <TableCell colSpan={6} className="py-2">
+        <TableCell colSpan={8} className="py-2">
           <div className="flex items-center gap-2" style={{ paddingLeft: depth * 24 }}>
             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => toggleGroupCollapse(collapseKey)}>
               {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -968,17 +1026,26 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
   );
 }
 
-function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, userCredits = 0, depth = 0 }: any) {
+function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, handleToggleFavorite, expandedNotes, toggleNotesExpanded, handleSaveNote, userCredits = 0, depth = 0 }: any) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: file.id });
   const [newTag, setNewTag] = useState("");
+  const [noteText, setNoteText] = useState(file.notes || "");
+  const [noteSaved, setNoteSaved] = useState(false);
   const isEditing = editingFileId === file.id;
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 };
   const isExpanded = expandedAnalysis?.has(file.id);
+  const isNotesExpanded = expandedNotes?.has(file.id);
   const hasAnalysis = file.ai_analysis && typeof file.ai_analysis === 'object' && !file.ai_analysis.raw_response;
+
+  const saveNote = async () => {
+    await handleSaveNote(file.id, noteText);
+    setNoteSaved(true);
+    setTimeout(() => setNoteSaved(false), 2000);
+  };
 
   return (
     <React.Fragment>
-      <TableRow ref={setNodeRef} style={style} className={cn(isDragging && "bg-muted/20", isExpanded && "border-b-0")}>
+      <TableRow ref={setNodeRef} style={style} className={cn(isDragging && "bg-muted/20", (isExpanded || isNotesExpanded) && "border-b-0")}>
         <TableCell>
           <div {...attributes} {...listeners} className="cursor-grab p-1 hover:bg-muted rounded">
             <GripVertical className="h-4 w-4 text-muted-foreground" />
@@ -991,9 +1058,20 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
               <Input value={tempFileName} onChange={(e) => setTempFileName(e.target.value)} className="h-7 w-32" autoFocus
                 onKeyDown={(e) => e.key === 'Enter' && handleRenameFile(file.id)} />
             ) : (
-              <span className="cursor-pointer hover:underline" onClick={() => { setEditingFileId(file.id); setTempFileName(file.name); }}>
-                {file.name}
-              </span>
+              <div className="flex flex-col">
+                <span className="cursor-pointer hover:underline" onClick={() => { setEditingFileId(file.id); setTempFileName(file.name); }}>
+                  {file.name}
+                </span>
+                {file.ai_analysis && (file.ai_analysis.addressNumber || file.ai_analysis.city || file.ai_analysis.county) && (
+                  <span className="text-[10px] text-muted-foreground leading-tight">
+                    {[
+                      [file.ai_analysis.addressNumber, file.ai_analysis.streetName, file.ai_analysis.suffix].filter(Boolean).join(' '),
+                      file.ai_analysis.city,
+                      file.ai_analysis.county,
+                    ].filter(Boolean).join(' · ')}
+                  </span>
+                )}
+              </div>
             )}
             {file.is_private && (
               <span className="inline-flex items-center gap-1 text-[10px] px-1.5 h-5 rounded-full border border-orange-400/40 bg-orange-500/10 text-orange-500">
@@ -1005,6 +1083,12 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
                 onClick={() => toggleAnalysisExpanded(file.id)} data-testid={`toggle-analysis-${file.id}`}>
                 {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                 <Sparkles className="h-3 w-3" />Analyzed
+              </Button>
+            )}
+            {file.notes && (
+              <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 border border-yellow-500/20 rounded-full"
+                onClick={() => toggleNotesExpanded(file.id)}>
+                <StickyNote className="h-3 w-3" />Note
               </Button>
             )}
           </div>
@@ -1027,6 +1111,8 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
         <TableCell>
           {file.ai_score ? <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px]">{file.ai_score}%</Badge> : "--"}
         </TableCell>
+        <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.city || "--"}</TableCell>
+        <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.county || "--"}</TableCell>
         <TableCell>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1046,6 +1132,12 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
         </TableCell>
         <TableCell className="text-right">
           <div className="flex items-center justify-end gap-1">
+            <Button variant="ghost" size="icon" className={`h-8 w-8 ${isNotesExpanded ? 'text-yellow-500' : ''}`} onClick={() => toggleNotesExpanded(file.id)} title="Notes" data-testid={`button-notes-${file.id}`}>
+              <StickyNote className={`h-4 w-4 ${isNotesExpanded || file.notes ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground'}`} />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleToggleFavorite(file.id)} title={file.is_favorited ? 'Unfavorite' : 'Favorite'} data-testid={`button-favorite-${file.id}`}>
+              <Star className={`h-4 w-4 ${file.is_favorited ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground'}`} />
+            </Button>
             <Button variant="ghost" size="sm" className={`h-8 gap-1 ${userCredits <= 0 ? 'text-muted-foreground' : 'text-primary'}`} onClick={() => handleAnalyze(file)} disabled={isAnalyzing || rateLimitRemaining <= 0 || userCredits <= 0} data-testid={`button-analyze-${file.id}`} title={userCredits <= 0 ? 'No credits remaining' : undefined}>
               {isAnalyzing && selectedFile?.id === file.id ? (
                 <><RefreshCw className="h-4 w-4 animate-spin" /><span className="hidden md:inline">Analyzing...</span></>
@@ -1093,15 +1185,98 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
         </TableCell>
       </TableRow>
       {isExpanded && hasAnalysis && (
-        <TableRow className="bg-muted/30 hover:bg-muted/40">
-          <TableCell colSpan={7} className="p-0">
+        <TableRow className={cn("bg-muted/30 hover:bg-muted/40", isNotesExpanded && "border-b-0")}>
+          <TableCell colSpan={9} className="p-0">
             <div className="px-6 py-4 max-h-[500px] overflow-auto">
               <AnalysisReport analysis={file.ai_analysis} />
             </div>
           </TableCell>
         </TableRow>
       )}
+      {isNotesExpanded && (
+        <TableRow className="bg-yellow-500/5 hover:bg-yellow-500/10">
+          <TableCell colSpan={9} className="px-6 py-3">
+            <div className="flex items-start gap-3">
+              <StickyNote className="h-4 w-4 text-yellow-500 mt-2 shrink-0" />
+              <div className="flex-1 space-y-2">
+                <textarea
+                  className="w-full min-h-[80px] resize-y rounded-md border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                  placeholder="Write a note about this file..."
+                  value={noteText}
+                  onChange={(e) => setNoteText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveNote(); }}
+                />
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={saveNote}>
+                    {noteSaved ? <><Check className="mr-1 h-3 w-3 text-green-500" />Saved</> : 'Save Note'}
+                  </Button>
+                  <span className="text-[10px] text-muted-foreground">⌘Enter to save</span>
+                </div>
+              </div>
+            </div>
+          </TableCell>
+        </TableRow>
+      )}
     </React.Fragment>
+  );
+}
+
+function formatSectionAsText(title: string, data: any): string {
+  const lines: string[] = [`${title}`];
+  if (title === "Additional Notes" && typeof data === 'object') {
+    for (const [area, findings] of Object.entries(data)) {
+      lines.push(`${area}:`);
+      if (typeof findings === 'string') {
+        lines.push(`  ${findings}`);
+      } else if (typeof findings === 'object' && findings !== null) {
+        for (const [k, v] of Object.entries(findings as any)) {
+          lines.push(`  ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+        }
+      }
+    }
+    return lines.join('\n');
+  }
+  if (data.condition) lines.push(`Condition: ${data.condition}`);
+  if (data.age) lines.push(`Age: ${data.age}`);
+  if (data.end_of_life) lines.push(`End of Life: ${data.end_of_life}`);
+  if (data.issues?.length) { lines.push('Issues:'); data.issues.forEach((i: string) => lines.push(`  • ${i}`)); }
+  if (data.recommendation) lines.push(`Recommendation: ${data.recommendation}`);
+  if (data.recommendations) lines.push(`Recommendations: ${data.recommendations}`);
+  if (data.notes) lines.push(`Notes: ${data.notes}`);
+  return lines.join('\n');
+}
+
+function formatAnalysisAsText(analysis: any): string {
+  const summary = analysis.summary || {};
+  const lines: string[] = ['=== Property Information ==='];
+  if (analysis.document_type) lines.push(`Type: ${analysis.document_type}`);
+  if (analysis.addressNumber) lines.push(`Address: ${analysis.addressNumber} ${analysis.streetName} ${analysis.suffix}`);
+  if (analysis.city) lines.push(`City: ${analysis.city}`);
+  if (analysis.county) lines.push(`County: ${analysis.county}`);
+  if (analysis.zipcode) lines.push(`Zipcode: ${analysis.zipcode}`);
+  if (analysis.fileName) lines.push(`File: ${analysis.fileName}`);
+  lines.push('', '=== Inspection Summary ===');
+  const allSections = ["Roof", "Electrical", "Plumbing", "Foundation", "HVAC", "Permits", "Pest Inspection", "Additional Notes"];
+  for (const section of allSections) {
+    if (summary[section]) {
+      lines.push('', `--- ${section} ---`);
+      lines.push(formatSectionAsText(section, summary[section]).split('\n').slice(1).join('\n'));
+    }
+  }
+  return lines.join('\n');
+}
+
+function CopyButton({ getText, className = "" }: { getText: () => string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(getText());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <Button variant="ghost" size="icon" className={`h-6 w-6 ${className}`} onClick={handleCopy} title="Copy to clipboard">
+      {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+    </Button>
   );
 }
 
@@ -1111,7 +1286,10 @@ function InspectionSection({ title, data }: { title: string; data: any }) {
   if (title === "Additional Notes" && typeof data === 'object') {
     return (
       <div className="space-y-2" data-testid={`section-${title.toLowerCase().replace(/\s+/g, '-')}`}>
-        <h4 className="text-sm font-bold text-primary">{title}</h4>
+        <div className="flex items-center gap-1">
+          <h4 className="text-sm font-bold text-primary">{title}</h4>
+          <CopyButton getText={() => formatSectionAsText(title, data)} className="opacity-40 hover:opacity-100" />
+        </div>
         {Object.entries(data).map(([area, findings]: [string, any]) => (
           <div key={area} className="ml-3 space-y-1">
             <p className="text-xs font-semibold text-foreground">{area}</p>
@@ -1132,7 +1310,10 @@ function InspectionSection({ title, data }: { title: string; data: any }) {
 
   return (
     <div className="space-y-1.5 rounded-lg border p-3 bg-card" data-testid={`section-${title.toLowerCase().replace(/\s+/g, '-')}`}>
-      <h4 className="text-sm font-bold text-primary">{title}</h4>
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-bold text-primary">{title}</h4>
+        <CopyButton getText={() => formatSectionAsText(title, data)} className="opacity-40 hover:opacity-100" />
+      </div>
       {data.condition && <p className="text-xs"><span className="font-medium text-foreground">Condition:</span> <span className="text-muted-foreground">{data.condition}</span></p>}
       {data.age && <p className="text-xs"><span className="font-medium text-foreground">Age:</span> <span className="text-muted-foreground">{data.age}</span></p>}
       {data.end_of_life && <p className="text-xs"><span className="font-medium text-foreground">End of Life:</span> <span className="text-muted-foreground">{data.end_of_life}</span></p>}
@@ -1163,7 +1344,10 @@ function AnalysisReport({ analysis }: { analysis: any }) {
       <div className="rounded-lg border bg-primary/5 p-4 space-y-2">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-bold text-primary">Property Information</h3>
-          {analysis.document_type && <Badge variant="secondary" className="text-[10px]">{analysis.document_type}</Badge>}
+          <div className="flex items-center gap-2">
+            {analysis.document_type && <Badge variant="secondary" className="text-[10px]">{analysis.document_type}</Badge>}
+            <CopyButton getText={() => formatAnalysisAsText(analysis)} />
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
           {analysis.addressNumber && <p><span className="font-medium">Address:</span> {analysis.addressNumber} {analysis.streetName} {analysis.suffix}</p>}

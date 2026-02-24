@@ -75,6 +75,8 @@ class Document(models.Model):
     tags = models.ManyToManyField(Tag, blank=True, related_name='documents')
     position = models.IntegerField(default=0)
     is_private = models.BooleanField(default=False)
+    favorited_by = models.ManyToManyField(User, related_name='favorite_documents', blank=True)
+    notes = models.TextField(blank=True, default='')
     ai_score = models.IntegerField(null=True, blank=True)
     ai_analysis = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

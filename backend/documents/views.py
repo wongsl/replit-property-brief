@@ -304,7 +304,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         tag, _ = Tag.objects.get_or_create(name=name)
         doc.tags.add(tag)
         invalidate_docs(request.user.id, getattr(request.user, 'team_id', None))
-        return Response(DocumentSerializer(doc).data)
+        return Response(DocumentSerializer(doc, context={'request': request}).data)
 
     @action(detail=True, methods=['post'])
     def remove_tag(self, request, pk=None):
@@ -316,7 +316,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         except Tag.DoesNotExist:
             pass
         invalidate_docs(request.user.id, getattr(request.user, 'team_id', None))
-        return Response(DocumentSerializer(doc).data)
+        return Response(DocumentSerializer(doc, context={'request': request}).data)
 
     @action(detail=True, methods=['post'])
     def analyze(self, request, pk=None):
@@ -350,7 +350,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
 
         invalidate_docs(request.user.id, getattr(request.user, 'team_id', None))
         invalidate_user(request.user.id)
-        return Response(DocumentSerializer(doc).data)
+        return Response(DocumentSerializer(doc, context={'request': request}).data)
 
     @action(detail=False, methods=['post'])
     def reorder(self, request):
@@ -367,7 +367,18 @@ class DocumentViewSet(viewsets.ModelViewSet):
         doc.folder_id = folder_id
         doc.save(update_fields=['folder_id'])
         invalidate_docs(request.user.id, getattr(request.user, 'team_id', None))
-        return Response(DocumentSerializer(doc).data)
+        return Response(DocumentSerializer(doc, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'])
+    def toggle_favorite(self, request, pk=None):
+        doc = self.get_object()
+        if doc.favorited_by.filter(pk=request.user.pk).exists():
+            doc.favorited_by.remove(request.user)
+            is_favorited = False
+        else:
+            doc.favorited_by.add(request.user)
+            is_favorited = True
+        return Response({'is_favorited': is_favorited})
 
 
 # --- Permission Views ---

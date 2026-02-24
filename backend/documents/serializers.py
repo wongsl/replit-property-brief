@@ -58,11 +58,19 @@ class FolderSerializer(serializers.ModelSerializer):
 class DocumentSerializer(serializers.ModelSerializer):
     owner_name = serializers.CharField(source='owner.username', read_only=True)
     folder_name = serializers.SerializerMethodField()
+    is_favorited = serializers.SerializerMethodField()
 
     def get_folder_name(self, obj):
         if obj.folder:
             return obj.folder.full_path
         return None
+
+    def get_is_favorited(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.favorited_by.filter(pk=request.user.pk).exists()
+        return False
+
     tags = TagSerializer(many=True, read_only=True)
     tag_names = serializers.ListField(child=serializers.CharField(), write_only=True, required=False)
 
@@ -71,7 +79,7 @@ class DocumentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'file', 'storage_path', 'file_type', 'file_size', 'status',
             'owner', 'owner_name', 'team', 'folder', 'folder_name',
-            'tags', 'tag_names', 'position', 'is_private', 'ai_score', 'ai_analysis',
+            'tags', 'tag_names', 'position', 'is_private', 'is_favorited', 'notes', 'ai_score', 'ai_analysis',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['owner', 'owner_name', 'file_size', 'status']
