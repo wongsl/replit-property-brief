@@ -94,6 +94,24 @@ def me(request):
     return Response(data)
 
 
+@api_view(['POST'])
+def change_password(request):
+    current_password = request.data.get('current_password', '').strip()
+    new_password = request.data.get('new_password', '').strip()
+
+    if not current_password or not new_password:
+        return Response({'error': 'Current and new password are required'}, status=400)
+    if len(new_password) < 6:
+        return Response({'error': 'New password must be at least 6 characters'}, status=400)
+    if not check_password(current_password, request.user.password):
+        return Response({'error': 'Current password is incorrect'}, status=400)
+
+    request.user.password = make_password(new_password)
+    request.user.save(update_fields=['password'])
+    invalidate_user(request.user.id)
+    return Response({'message': 'Password updated successfully'})
+
+
 @api_view(['GET', 'POST'])
 @permission_classes([permissions.IsAuthenticatedOrReadOnly])
 def teams_list(request):

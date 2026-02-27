@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Lock, Database } from "lucide-react";
+import { Lock, Database, Gift } from "lucide-react";
 
 export default function AuthPage() {
   const { login, register } = useAuth();
@@ -87,6 +87,13 @@ export default function AuthPage() {
                   onKeyDown={handleKeyDown}
                   className="bg-muted/50"
                 />
+              </div>
+            )}
+
+            {mode === "register" && (
+              <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+                <Gift className="h-3.5 w-3.5 shrink-0" />
+                You'll receive <strong>40 free credits</strong> to get started.
               </div>
             )}
 

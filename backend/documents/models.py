@@ -7,7 +7,7 @@ class User(AbstractUser):
     role = models.CharField(max_length=15, choices=ROLE_CHOICES, default='user')
     team = models.ForeignKey('Team', on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
     email = models.EmailField(unique=True, null=True, blank=True, default=None)
-    credits = models.IntegerField(default=10)
+    credits = models.IntegerField(default=40)
 
     class Meta:
         db_table = 'users'

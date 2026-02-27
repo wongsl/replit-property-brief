@@ -11,6 +11,7 @@ import DashboardPage from "@/pages/dashboard-page";
 import ExplorerPage from "@/pages/explorer-page";
 import AdminPage from "@/pages/admin-page";
 import TeamsPage from "@/pages/teams-page";
+import AccountSettingsPage from "@/pages/account-settings-page";
 
 function ProtectedRoute({ component: Component, ...rest }: any) {
   const { user, loading } = useAuth();
@@ -61,6 +62,12 @@ function Router() {
       <Route path="/teams">
         <AppLayout>
           <ProtectedRoute component={TeamsPage} />
+        </AppLayout>
+      </Route>
+
+      <Route path="/settings">
+        <AppLayout>
+          <ProtectedRoute component={AccountSettingsPage} />
         </AppLayout>
       </Route>
 

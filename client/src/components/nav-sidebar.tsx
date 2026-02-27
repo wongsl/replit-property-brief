@@ -10,6 +10,7 @@ import {
   Database,
   RefreshCw,
   Star,
+  Settings,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -101,6 +102,12 @@ function AppSidebar() {
       url: "/admin",
       icon: Shield,
       roles: ["admin"],
+    },
+    {
+      title: "Account Settings",
+      url: "/settings",
+      icon: Settings,
+      roles: ["admin", "team_leader", "user", "viewer"],
     },
   ];
 

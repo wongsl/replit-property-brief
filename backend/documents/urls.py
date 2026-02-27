@@ -13,6 +13,7 @@ urlpatterns = [
     path('auth/login/', views.login),
     path('auth/logout/', views.logout),
     path('auth/me/', views.me),
+    path('auth/change-password/', views.change_password),
     path('teams/', views.teams_list),
     path('teams/join-request/', views.team_join_request),
     path('teams/join-requests/', views.team_join_requests_list),
