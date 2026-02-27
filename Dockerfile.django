@@ -1,0 +1,31 @@
+FROM python:3.11-slim
+WORKDIR /app
+
+# Install system dependencies required by psycopg2 and Pillow
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
+    libjpeg-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt gunicorn
+
+# Copy Django source
+COPY backend/ .
+
+EXPOSE 8000
+
+# At startup: construct DATABASE_URL, run migrations, collect static, then start gunicorn
+CMD ["sh", "-c", "\
+  export DATABASE_URL=\"postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}\" && \
+  python manage.py migrate --noinput && \
+  python manage.py collectstatic --noinput && \
+  gunicorn property_brief.wsgi:application \
+    --bind 0.0.0.0:8000 \
+    --workers 2 \
+    --timeout 120 \
+    --access-logfile - \
+    --error-logfile - \
+"]
