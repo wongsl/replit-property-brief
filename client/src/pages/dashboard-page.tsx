@@ -12,7 +12,7 @@ import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
   ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, Minus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
-  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers
+  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -107,7 +107,7 @@ function removeCombinedAnalysisFromFolder(folder: any, recordId: number): any {
   };
 }
 
-export default function DashboardPage() {
+export default function DashboardPage({ initialFavoritesOnly = false }: { initialFavoritesOnly?: boolean } = {}) {
   const { user, refreshUser, decrementRateLimit, rateLimitRemaining, resetRateLimit } = useAuth();
   const { toast } = useToast();
   const [documents, setDocuments] = useState<any[]>([]);
@@ -116,6 +116,8 @@ export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState("my-files");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadCurrent, setUploadCurrent] = useState(0);
+  const [uploadTotal, setUploadTotal] = useState(0);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadPrivate, setUploadPrivate] = useState(false);
   const [selectedFile, setSelectedFile] = useState<any>(null);
@@ -134,11 +136,13 @@ export default function DashboardPage() {
   const [showCreditsDialog, setShowCreditsDialog] = useState(false);
   const [myCreditRequest, setMyCreditRequest] = useState<any | null>(undefined);
   const [creditRequestAmount, setCreditRequestAmount] = useState(5);
-  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(initialFavoritesOnly);
   const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set());
   const [selectedDocIds, setSelectedDocIds] = useState<Set<number>>(new Set());
   const [isCombining, setIsCombining] = useState(false);
   const [expandedCombinedAnalyses, setExpandedCombinedAnalyses] = useState<Set<number>>(new Set());
+  const [isDraftingEmail, setIsDraftingEmail] = useState(false);
+  const [draftEmailDocId, setDraftEmailDocId] = useState<number | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -333,84 +337,94 @@ export default function DashboardPage() {
     setShowUploadDialog(false);
     const input = document.createElement('input');
     input.type = 'file';
+    input.multiple = true;
     input.onchange = async (e: any) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+      const files: File[] = Array.from(e.target.files || []);
+      if (files.length === 0) return;
       setIsUploading(true);
-      setUploadProgress(10);
+      setUploadTotal(files.length);
 
-      try {
-        const urlRes = await fetch('/api/uploads/request-url', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: file.name,
-            size: file.size,
-            contentType: file.type || 'application/octet-stream',
-          }),
-        });
-        if (!urlRes.ok) throw new Error('Failed to get upload URL');
-        const { uploadURL, objectPath } = await urlRes.json();
+      // Fetch current folders once before the loop for categorization
+      const foldersRes = await apiFetch('/api/folders/');
+      let currentFolders = foldersRes.ok ? await foldersRes.json() : folders;
 
-        setUploadProgress(30);
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setUploadCurrent(i + 1);
+        setUploadProgress(0);
 
-        const s3Res = await fetch(uploadURL, {
-          method: 'PUT',
-          body: file,
-          headers: { 'Content-Type': file.type || 'application/octet-stream' },
-        });
-        if (!s3Res.ok) {
-          throw new Error(`S3 upload failed: ${s3Res.status} ${s3Res.statusText}`);
-        }
+        try {
+          const urlRes = await fetch('/api/uploads/request-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: file.name,
+              size: file.size,
+              contentType: file.type || 'application/octet-stream',
+            }),
+          });
+          if (!urlRes.ok) throw new Error('Failed to get upload URL');
+          const { uploadURL, objectPath } = await urlRes.json();
 
-        setUploadProgress(70);
+          setUploadProgress(30);
 
-        const res = await apiFetch('/api/documents/', {
-          method: 'POST',
-          body: JSON.stringify({
-            name: file.name,
-            storage_path: objectPath,
-            file_size: file.size,
-            is_private: isPrivate,
-          }),
-        });
+          const s3Res = await fetch(uploadURL, {
+            method: 'PUT',
+            body: file,
+            headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          });
+          if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
 
-        if (res.ok) {
-          const newDoc = await res.json();
-          setUploadProgress(85);
+          setUploadProgress(70);
 
-          const foldersRes = await apiFetch('/api/folders/');
-          const currentFolders = foldersRes.ok ? await foldersRes.json() : folders;
-          const currentFlat = flattenFolders(currentFolders);
+          const res = await apiFetch('/api/documents/', {
+            method: 'POST',
+            body: JSON.stringify({
+              name: file.name,
+              storage_path: objectPath,
+              file_size: file.size,
+              is_private: isPrivate,
+            }),
+          });
 
-          const { matchedFolder, suggestedName } = categorizeName(file.name, currentFlat);
+          if (res.ok) {
+            const newDoc = await res.json();
+            const currentFlat = flattenFolders(currentFolders);
+            const { matchedFolder, suggestedName } = categorizeName(file.name, currentFlat);
 
-          if (matchedFolder) {
-            await apiFetch(`/api/documents/${newDoc.id}/move/`, {
-              method: 'POST',
-              body: JSON.stringify({ folder_id: matchedFolder.id }),
-            });
-          } else if (suggestedName) {
-            const folderRes = await apiFetch('/api/folders/', {
-              method: 'POST',
-              body: JSON.stringify({ name: suggestedName }),
-            });
-            if (folderRes.ok) {
-              const newFolder = await folderRes.json();
+            if (matchedFolder) {
               await apiFetch(`/api/documents/${newDoc.id}/move/`, {
                 method: 'POST',
-                body: JSON.stringify({ folder_id: newFolder.id }),
+                body: JSON.stringify({ folder_id: matchedFolder.id }),
               });
+            } else if (suggestedName) {
+              const folderRes = await apiFetch('/api/folders/', {
+                method: 'POST',
+                body: JSON.stringify({ name: suggestedName }),
+              });
+              if (folderRes.ok) {
+                const newFolder = await folderRes.json();
+                currentFolders = [...currentFolders, newFolder];
+                await apiFetch(`/api/documents/${newDoc.id}/move/`, {
+                  method: 'POST',
+                  body: JSON.stringify({ folder_id: newFolder.id }),
+                });
+              }
             }
           }
 
           setUploadProgress(100);
-          loadData();
+        } catch (err) {
+          console.error(`Upload failed for ${file.name}:`, err);
         }
-      } catch (err) {
-        console.error('Upload failed:', err);
       }
-      setTimeout(() => setIsUploading(false), 500);
+
+      loadData();
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadTotal(0);
+        setUploadCurrent(0);
+      }, 500);
     };
     input.click();
   };
@@ -468,6 +482,21 @@ export default function DashboardPage() {
     if (res.ok) {
       setDocuments(prev => prev.map(d => d.id === docId ? { ...d, notes } : d));
     }
+  };
+
+  const handleDraftEmail = async (docId: number) => {
+    setIsDraftingEmail(true);
+    setDraftEmailDocId(docId);
+    const res = await apiFetch(`/api/documents/${docId}/draft-email/`, { method: 'POST' });
+    if (res.ok) {
+      const { email_draft } = await res.json();
+      setDocuments(prev => prev.map(d => d.id === docId ? { ...d, email_draft } : d));
+    } else {
+      const err = await res.json().catch(() => ({}));
+      toast({ title: "Could not draft email", description: err.error, variant: "destructive" });
+    }
+    setIsDraftingEmail(false);
+    setDraftEmailDocId(null);
   };
 
   const handleToggleFavorite = async (docId: number) => {
@@ -692,6 +721,7 @@ export default function DashboardPage() {
     userCredits: user?.credits ?? 0,
     selectedDocIds, toggleDocSelection,
     expandedCombinedAnalyses, toggleCombinedExpanded, handleDeleteCombinedAnalysis,
+    handleDraftEmail, isDraftingEmail, draftEmailDocId,
   };
 
   const countDocsInTree = (folder: any): number => {
@@ -706,8 +736,8 @@ export default function DashboardPage() {
     <div className="space-y-8">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-3xl font-display font-bold tracking-tight">Documents</h2>
-          <p className="text-muted-foreground">Manage, group, and analyze your files.</p>
+          <h2 className="text-3xl font-display font-bold tracking-tight">{initialFavoritesOnly ? "Favorites" : "Documents"}</h2>
+          <p className="text-muted-foreground">{initialFavoritesOnly ? "Your starred documents." : "Manage, group, and analyze your files."}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -726,7 +756,10 @@ export default function DashboardPage() {
       {isUploading && (
         <Card className="border-primary/20 bg-primary/5"><CardContent className="pt-6">
           <div className="flex items-center justify-between text-sm mb-2">
-            <span className="font-medium">Uploading...</span><span>{uploadProgress}%</span>
+            <span className="font-medium">
+              {uploadTotal > 1 ? `Uploading file ${uploadCurrent} of ${uploadTotal}...` : "Uploading..."}
+            </span>
+            <span>{uploadProgress}%</span>
           </div>
           <Progress value={uploadProgress} className="h-2" />
         </CardContent></Card>
@@ -947,8 +980,8 @@ export default function DashboardPage() {
       <Dialog open={showUploadDialog} onOpenChange={setShowUploadDialog}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Upload File</DialogTitle>
-            <DialogDescription>Choose your privacy setting before selecting a file.</DialogDescription>
+            <DialogTitle>Upload Files</DialogTitle>
+            <DialogDescription>Choose your privacy setting before selecting files.</DialogDescription>
           </DialogHeader>
           <div className="py-4 space-y-3">
             {user?.team ? (
@@ -978,7 +1011,7 @@ export default function DashboardPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowUploadDialog(false)}>Cancel</Button>
             <Button onClick={() => handleUpload(uploadPrivate)}>
-              <UploadCloud className="mr-2 h-4 w-4" />Choose File
+              <UploadCloud className="mr-2 h-4 w-4" />Choose Files
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1220,7 +1253,7 @@ function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedE
   );
 }
 
-function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, handleToggleFavorite, expandedNotes, toggleNotesExpanded, handleSaveNote, userCredits = 0, depth = 0, selectedDocIds, toggleDocSelection }: any) {
+function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, handleToggleFavorite, expandedNotes, toggleNotesExpanded, handleSaveNote, userCredits = 0, depth = 0, selectedDocIds, toggleDocSelection, handleDraftEmail, isDraftingEmail, draftEmailDocId }: any) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: file.id });
   const [newTag, setNewTag] = useState("");
   const [noteText, setNoteText] = useState(file.notes || "");
@@ -1391,7 +1424,12 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
         <TableRow className={cn("bg-muted/30 hover:bg-muted/40", isNotesExpanded && "border-b-0")}>
           <TableCell colSpan={9} className="p-0">
             <div className="px-6 py-4 max-h-[500px] overflow-auto">
-              <AnalysisReport analysis={file.ai_analysis} />
+              <AnalysisReport
+                analysis={file.ai_analysis}
+                emailDraft={file.email_draft}
+                onDraftEmail={() => handleDraftEmail(file.id)}
+                isDraftingEmail={isDraftingEmail && draftEmailDocId === file.id}
+              />
             </div>
           </TableCell>
         </TableRow>
@@ -1469,6 +1507,7 @@ function formatAnalysisAsText(analysis: any): string {
   return lines.join('\n');
 }
 
+
 function CopyButton({ getText, className = "" }: { getText: () => string; className?: string }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = () => {
@@ -1537,10 +1576,35 @@ function InspectionSection({ title, data }: { title: string; data: any }) {
   );
 }
 
-function AnalysisReport({ analysis }: { analysis: any }) {
+function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail }: { analysis: any; emailDraft?: string; onDraftEmail?: () => void; isDraftingEmail?: boolean }) {
   const summary = analysis.summary || {};
   const mainSections = ["Roof", "Electrical", "Plumbing", "Foundation", "HVAC"];
   const otherSections = ["Permits", "Pest Inspection"];
+  const [showEmailDialog, setShowEmailDialog] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
+  const prevEmailDraft = React.useRef(emailDraft);
+
+  // Auto-open dialog when a new email draft arrives
+  React.useEffect(() => {
+    if (emailDraft && emailDraft !== prevEmailDraft.current) {
+      setShowEmailDialog(true);
+    }
+    prevEmailDraft.current = emailDraft;
+  }, [emailDraft]);
+
+  const handleDraftClick = () => {
+    if (emailDraft) {
+      setShowEmailDialog(true);
+    } else {
+      onDraftEmail?.();
+    }
+  };
+
+  const handleCopy = () => {
+    if (emailDraft) navigator.clipboard.writeText(emailDraft);
+    setEmailCopied(true);
+    setTimeout(() => setEmailCopied(false), 2000);
+  };
 
   return (
     <div className="space-y-4" data-testid="analysis-report">
@@ -1549,6 +1613,20 @@ function AnalysisReport({ analysis }: { analysis: any }) {
           <h3 className="text-sm font-bold text-primary">Property Information</h3>
           <div className="flex items-center gap-2">
             {analysis.document_type && <Badge variant="secondary" className="text-[10px]">{analysis.document_type}</Badge>}
+            {onDraftEmail && (
+              <Button
+                variant="outline" size="sm"
+                className="h-6 gap-1.5 px-2 text-[10px]"
+                onClick={handleDraftClick}
+                disabled={isDraftingEmail}
+              >
+                {isDraftingEmail
+                  ? <><RefreshCw className="h-3 w-3 animate-spin" />Drafting…</>
+                  : emailDraft
+                    ? <><Mail className="h-3 w-3" />View Email</>
+                    : <><Mail className="h-3 w-3" />Draft Email</>}
+              </Button>
+            )}
             <CopyButton getText={() => formatAnalysisAsText(analysis)} />
           </div>
         </div>
@@ -1575,6 +1653,33 @@ function AnalysisReport({ analysis }: { analysis: any }) {
           <InspectionSection title="Additional Notes" data={summary["Additional Notes"]} />
         )}
       </div>
+
+      <Dialog open={showEmailDialog} onOpenChange={setShowEmailDialog}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail className="h-4 w-4" />Inspection Email Draft
+            </DialogTitle>
+            <DialogDescription>
+              AI-generated neutral summary email. Review before sending.
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            readOnly
+            value={emailDraft || ""}
+            className="w-full h-80 resize-none rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-foreground focus:outline-none"
+          />
+          <DialogFooter className="gap-2">
+            <Button variant="outline" className="gap-2 mr-auto" onClick={() => { onDraftEmail?.(); }} disabled={isDraftingEmail}>
+              {isDraftingEmail ? <><RefreshCw className="h-4 w-4 animate-spin" />Regenerating…</> : <><RefreshCw className="h-4 w-4" />Regenerate</>}
+            </Button>
+            <Button variant="outline" onClick={() => setShowEmailDialog(false)}>Close</Button>
+            <Button onClick={handleCopy} className="gap-2">
+              {emailCopied ? <><Check className="h-4 w-4" />Copied!</> : <><Copy className="h-4 w-4" />Copy</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

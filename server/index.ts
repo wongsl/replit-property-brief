@@ -23,7 +23,7 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/);
+  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/);
   const skip = (req.path.startsWith('/api') || req.path.startsWith('/media')) && !isExpressHandled;
   if (skip) {
     return next();
@@ -36,7 +36,7 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/);
+  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/);
   const skip = (req.path.startsWith('/api') || req.path.startsWith('/media')) && !isExpressHandled;
   if (skip) {
     return next();
@@ -71,6 +71,11 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // ALB health check endpoint — must be registered before routes
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok" });
+  });
+
   await registerRoutes(httpServer, app);
   
 

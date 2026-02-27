@@ -216,6 +216,97 @@ export function registerFolderCombinedAnalysisRoute(app: Express): void {
   });
 }
 
+const EMAIL_SYSTEM_PROMPT =
+  "You are a licensed real estate professional drafting a neutral, factual email summarizing a home inspection report for buyers.\n\n" +
+  "Write a clear and organized summary that:\n\n" +
+  "- Presents facts without interpretation or persuasion\n" +
+  "- Does not recommend whether the buyer should proceed\n" +
+  "- Does not use emotionally charged language\n" +
+  "- Does not minimize or exaggerate findings\n" +
+  "- Does not suggest negotiation strategy\n" +
+  "- Avoids alarmist tone\n\n" +
+  "Structure the email as follows:\n\n" +
+  "1. Property reference (address and report type)\n" +
+  "2. Brief overview explaining that this is a summary of documented findings\n" +
+  "3. Major systems summary (Roof, Electrical, Plumbing, Foundation, HVAC)\n" +
+  "   - Current condition (as stated)\n" +
+  "   - Noted issues\n" +
+  "   - Inspector recommendations\n" +
+  "   - Estimated cost ranges (if provided)\n" +
+  "4. Additional findings grouped by area (Interior, Exterior, Garage, Crawlspace, etc.)\n" +
+  "5. Items noted as near or beyond typical useful life\n" +
+  "6. Closing statement encouraging buyer to review full report and consult appropriate licensed professionals for further evaluation\n\n" +
+  "Do not:\n" +
+  "- Provide opinions\n" +
+  '- Use phrases like "good news" or "major concern"\n' +
+  "- Provide total repair estimates unless directly calculable from provided ranges\n" +
+  "- Suggest next steps beyond reviewing and consulting professionals\n\n" +
+  "Respond with only the email text — no preamble, no markdown headers, no JSON.";
+
+export function registerDraftEmailRoute(app: Express): void {
+  const perplexity = makePerplexityClient();
+
+  app.post("/api/documents/:id/draft-email/", async (req, res) => {
+    try {
+      const docId = req.params.id;
+      const cookies = req.headers.cookie || "";
+      const requestId = (req as any).requestId ?? "-";
+
+      const docRes = await fetch(`http://127.0.0.1:8000/api/documents/${docId}/`, {
+        headers: { Cookie: cookies, "X-Request-Id": requestId },
+      });
+
+      if (!docRes.ok) {
+        return res.status(docRes.status).json({ error: "Document not found" });
+      }
+
+      const doc = (await docRes.json()) as any;
+
+      if (!doc.ai_analysis || doc.ai_analysis.raw_response) {
+        return res.status(400).json({ error: "Document must be analyzed before drafting an email." });
+      }
+
+      log(`Drafting email for document ${docId}: ${doc.name}`, "analyze");
+
+      const completion = await perplexity.chat.completions.create({
+        model: "sonar-pro",
+        messages: [
+          { role: "system", content: EMAIL_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: `Here are the inspection details:\n\n${JSON.stringify(doc.ai_analysis, null, 2)}`,
+          },
+        ],
+        max_tokens: 2000,
+      });
+
+      const emailDraft = completion.choices[0]?.message?.content?.trim() || "";
+
+      const saveRes = await fetch(`http://127.0.0.1:8000/api/documents/${docId}/`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: cookies,
+          "X-Request-Id": requestId,
+        },
+        body: JSON.stringify({ email_draft: emailDraft }),
+      });
+
+      if (!saveRes.ok) {
+        log(`Failed to save email draft to Django: ${saveRes.status}`, "analyze");
+        return res.status(500).json({ error: "Failed to save email draft" });
+      }
+
+      const updatedDoc = await saveRes.json();
+      log(`Email draft saved for document ${docId}`, "analyze");
+      return res.json({ email_draft: updatedDoc.email_draft });
+    } catch (err: any) {
+      log(`Draft email error: ${err.message}`, "analyze");
+      return res.status(500).json({ error: "Email draft failed: " + err.message });
+    }
+  });
+}
+
 export function registerAnalyzeRoutes(app: Express): void {
   const objectStorageService = new ObjectStorageService();
   const perplexity = makePerplexityClient();

@@ -4,7 +4,7 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 import { spawn } from "child_process";
 import { log } from "./index";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
-import { registerAnalyzeRoutes, registerFolderCombinedAnalysisRoute } from "./analyze";
+import { registerAnalyzeRoutes, registerFolderCombinedAnalysisRoute, registerDraftEmailRoute } from "./analyze";
 import * as path from "path";
 
 function startDjango(): Promise<void> {
@@ -54,11 +54,18 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  await startDjango();
+  // In production (ECS), Django runs as a separate container on the same task
+  // network and is already listening on port 8000. Skip spawning it.
+  if (process.env.SKIP_DJANGO_SPAWN !== "true") {
+    await startDjango();
+  } else {
+    log("Skipping Django spawn (SKIP_DJANGO_SPAWN=true)", "django");
+  }
 
   registerObjectStorageRoutes(app);
   registerAnalyzeRoutes(app);
   registerFolderCombinedAnalysisRoute(app);
+  registerDraftEmailRoute(app);
 
   const djangoProxy = createProxyMiddleware({
     target: "http://127.0.0.1:8000",
@@ -70,6 +77,9 @@ export async function registerRoutes(
       return next();
     }
     if (req.originalUrl.match(/^\/api\/documents\/\d+\/analyze\/?$/)) {
+      return next();
+    }
+    if (req.originalUrl.match(/^\/api\/documents\/\d+\/draft-email\/?$/)) {
       return next();
     }
     if (req.originalUrl.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/)) {

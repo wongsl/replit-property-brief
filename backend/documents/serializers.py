@@ -95,7 +95,7 @@ class DocumentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'file', 'storage_path', 'file_type', 'file_size', 'status',
             'owner', 'owner_name', 'team', 'folder', 'folder_name',
-            'tags', 'tag_names', 'position', 'is_private', 'is_favorited', 'notes', 'ai_score', 'ai_analysis',
+            'tags', 'tag_names', 'position', 'is_private', 'is_favorited', 'notes', 'email_draft', 'ai_score', 'ai_analysis',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['owner', 'owner_name', 'file_size', 'status']

@@ -40,6 +40,12 @@ function Router() {
         </AppLayout>
       </Route>
 
+      <Route path="/favorites">
+        <AppLayout>
+          <ProtectedRoute component={() => <DashboardPage initialFavoritesOnly />} />
+        </AppLayout>
+      </Route>
+
       <Route path="/explorer">
         <AppLayout>
           <ProtectedRoute component={ExplorerPage} />

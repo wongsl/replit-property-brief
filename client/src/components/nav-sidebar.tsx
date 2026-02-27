@@ -9,6 +9,7 @@ import {
   Users,
   Database,
   RefreshCw,
+  Star,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -75,6 +76,12 @@ function AppSidebar() {
       title: "Dashboard",
       url: "/dashboard",
       icon: LayoutDashboard,
+      roles: ["admin", "team_leader", "user"],
+    },
+    {
+      title: "Favorites",
+      url: "/favorites",
+      icon: Star,
       roles: ["admin", "team_leader", "user"],
     },
     {

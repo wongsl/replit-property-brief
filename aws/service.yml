@@ -1,0 +1,391 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Property Brief - EC2 Service Stack
+  Launches an EC2 instance running both Node.js (Express) and Django (gunicorn)
+  behind an Application Load Balancer. Requires infrastructure.yml to be deployed first.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: property-brief
+    Description: Must match the AppName used in infrastructure.yml
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+    Description: EC2 instance type (t3.small = 2 vCPU / 2 GB, sufficient for Node + Django)
+
+  KeyPairName:
+    Type: String
+    Default: ''
+    Description: EC2 key pair name for SSH access (optional — SSM Session Manager works without it)
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+
+Resources:
+
+  # ===========================================================
+  # APPLICATION LOAD BALANCER
+  # ===========================================================
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${AppName}-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - Fn::ImportValue: !Sub ${AppName}-PublicSubnet1Id
+        - Fn::ImportValue: !Sub ${AppName}-PublicSubnet2Id
+      SecurityGroups:
+        - Fn::ImportValue: !Sub ${AppName}-ALBSecurityGroupId
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${AppName}-tg
+      Protocol: HTTP
+      Port: 3000
+      VpcId:
+        Fn::ImportValue: !Sub ${AppName}-VpcId
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  # ===========================================================
+  # EC2 INSTANCE
+  # Uses the latest Amazon Linux 2023 AMI via SSM parameter.
+  # User Data:
+  #   1. Installs Node.js 20, Python 3.11, and system packages
+  #   2. Writes /usr/local/bin/pb-deploy (reusable deploy script)
+  #   3. Creates two systemd services: property-brief-django and property-brief-node
+  #   4. Runs pb-deploy for the initial deployment
+  # ===========================================================
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      IamInstanceProfile:
+        Fn::ImportValue: !Sub ${AppName}-EC2InstanceProfileArn
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: '0'
+          SubnetId:
+            Fn::ImportValue: !Sub ${AppName}-PublicSubnet1Id
+          GroupSet:
+            - Fn::ImportValue: !Sub ${AppName}-EC2SecurityGroupId
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref AWS::NoValue]
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-server
+      UserData:
+        Fn::Base64:
+          !Sub
+            - |
+              #!/bin/bash
+              set -euxo pipefail
+              exec > >(tee /var/log/user-data.log) 2>&1
+
+              APP_NAME="${AppName}"
+              APP_DIR="/opt/${AppName}"
+              APP_USER="${AppName}"
+              AWS_REGION="${AWS::Region}"
+              DB_HOST="${DBEndpoint}"
+              DB_PORT="5432"
+              DB_NAME="${DBName}"
+              DB_USER="${DBUsername}"
+              DB_SECRET_NAME="${DBSecretName}"
+              DJANGO_SECRET_NAME="${DjangoSecretKeyName}"
+              PERPLEXITY_SECRET_NAME="${PerplexityApiKeyName}"
+              S3_BUCKET="${ArtifactBucket}"
+
+              # ---------------------------------------------------
+              # 1. System packages
+              # ---------------------------------------------------
+              dnf update -y
+              dnf install -y git tar gzip
+
+              # Node.js 20
+              curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+              dnf install -y nodejs
+
+              # Python 3.11 + build deps for psycopg2-binary and Pillow
+              dnf install -y python3.11 python3.11-pip python3.11-devel \
+                             libpq-devel gcc libjpeg-devel zlib-devel
+
+              # ---------------------------------------------------
+              # 2. Create application user and directories
+              # ---------------------------------------------------
+              id -u "$APP_USER" &>/dev/null || useradd -r -m -d "$APP_DIR" -s /bin/bash "$APP_USER"
+              mkdir -p "$APP_DIR"
+              chown "$APP_USER:$APP_USER" "$APP_DIR"
+
+              # ---------------------------------------------------
+              # 3. Write static config (read by pb-deploy)
+              # ---------------------------------------------------
+              mkdir -p /etc/$APP_NAME
+              cat > /etc/$APP_NAME/config.env << CONFIG_EOF
+              APP_NAME=$APP_NAME
+              APP_DIR=$APP_DIR
+              APP_USER=$APP_USER
+              AWS_REGION=$AWS_REGION
+              DB_HOST=$DB_HOST
+              DB_PORT=$DB_PORT
+              DB_NAME=$DB_NAME
+              DB_USER=$DB_USER
+              DB_SECRET_NAME=$DB_SECRET_NAME
+              DJANGO_SECRET_NAME=$DJANGO_SECRET_NAME
+              PERPLEXITY_SECRET_NAME=$PERPLEXITY_SECRET_NAME
+              S3_BUCKET=$S3_BUCKET
+              CONFIG_EOF
+              chmod 600 /etc/$APP_NAME/config.env
+
+              # ---------------------------------------------------
+              # 4. Write the reusable deploy script
+              #    (single-quote heredoc → no variable expansion here;
+              #     variables come from /etc/<app>/config.env at runtime)
+              # ---------------------------------------------------
+              cat > /usr/local/bin/pb-deploy << 'DEPLOY_EOF'
+              #!/bin/bash
+              set -euo pipefail
+
+              source /etc/$(basename $(ls /etc/ | grep -E '^property-brief$' 2>/dev/null || echo 'property-brief'))/config.env 2>/dev/null \
+                || { echo "Config not found at /etc/<app>/config.env"; exit 1; }
+
+              # Re-source using APP_NAME now that we have it
+              source /etc/${APP_NAME}/config.env
+
+              log() { echo "[pb-deploy] $*"; }
+
+              log "=== Starting deployment ==="
+
+              # Fetch secrets from Secrets Manager
+              log "Fetching secrets..."
+              get_secret_field() {
+                aws secretsmanager get-secret-value \
+                  --secret-id "$1" \
+                  --region "$AWS_REGION" \
+                  --query SecretString \
+                  --output text \
+                | python3 -c "import sys,json; print(json.load(sys.stdin)['$2'])"
+              }
+
+              DB_PASSWORD=$(get_secret_field "$DB_SECRET_NAME" password)
+              DJANGO_SECRET_KEY=$(get_secret_field "$DJANGO_SECRET_NAME" secret_key)
+              PERPLEXITY_API_KEY=$(get_secret_field "$PERPLEXITY_SECRET_NAME" api_key)
+
+              DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+
+              # Download artifact from S3
+              log "Downloading artifact from s3://${S3_BUCKET}/${APP_NAME}/latest.tar.gz ..."
+              aws s3 cp "s3://${S3_BUCKET}/${APP_NAME}/latest.tar.gz" /tmp/app.tar.gz \
+                --region "$AWS_REGION"
+
+              # Extract to staging dir, then swap atomically
+              STAGE_DIR="$APP_DIR/.staging"
+              rm -rf "$STAGE_DIR"
+              mkdir -p "$STAGE_DIR"
+              tar -xzf /tmp/app.tar.gz -C "$STAGE_DIR"
+              rm /tmp/app.tar.gz
+
+              # Install Node.js production deps
+              log "Installing Node.js production dependencies..."
+              cd "$STAGE_DIR"
+              npm ci --omit=dev
+
+              # Install Python deps in a virtualenv
+              log "Installing Python dependencies..."
+              python3.11 -m venv "$STAGE_DIR/.venv"
+              "$STAGE_DIR/.venv/bin/pip" install --upgrade pip -q
+              "$STAGE_DIR/.venv/bin/pip" install -r requirements.txt -q
+
+              # Write the .env file (sourced by systemd services)
+              log "Writing .env file..."
+              cat > "$STAGE_DIR/.env" << ENV_EOF
+              NODE_ENV=production
+              PORT=3000
+              SKIP_DJANGO_SPAWN=true
+              DATABASE_URL=${DATABASE_URL}
+              DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+              DJANGO_DEBUG=False
+              PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+              AWS_REGION=${AWS_REGION}
+              PUBLIC_OBJECT_SEARCH_PATHS=/wongsl-real-estate-documents/public
+              PRIVATE_OBJECT_DIR=/wongsl-real-estate-documents/private
+              USE_LOCAL_STORAGE=false
+              DB_HOST=${DB_HOST}
+              DB_PORT=${DB_PORT}
+              DB_NAME=${DB_NAME}
+              DB_USER=${DB_USER}
+              DB_PASSWORD=${DB_PASSWORD}
+              ENV_EOF
+              chmod 600 "$STAGE_DIR/.env"
+
+              # Run Django migrations (uses DATABASE_URL from env)
+              log "Running Django migrations..."
+              cd "$STAGE_DIR"
+              DATABASE_URL="$DATABASE_URL" \
+              DJANGO_SECRET_KEY="$DJANGO_SECRET_KEY" \
+              DJANGO_DEBUG=False \
+                "$STAGE_DIR/.venv/bin/python" backend/manage.py migrate --noinput
+
+              # Collect static files
+              DATABASE_URL="$DATABASE_URL" \
+              DJANGO_SECRET_KEY="$DJANGO_SECRET_KEY" \
+              DJANGO_DEBUG=False \
+                "$STAGE_DIR/.venv/bin/python" backend/manage.py collectstatic --noinput
+
+              # Swap staging → live
+              log "Swapping deployment..."
+              LIVE_DIR="$APP_DIR/live"
+              OLD_DIR="$APP_DIR/previous"
+              rm -rf "$OLD_DIR"
+              [ -d "$LIVE_DIR" ] && mv "$LIVE_DIR" "$OLD_DIR"
+              mv "$STAGE_DIR" "$LIVE_DIR"
+              chown -R "$APP_USER:$APP_USER" "$LIVE_DIR"
+
+              # Restart services
+              log "Restarting services..."
+              systemctl restart "${APP_NAME}-django" || true
+              sleep 3
+              systemctl restart "${APP_NAME}-node"
+
+              log "=== Deployment complete ==="
+              DEPLOY_EOF
+              chmod +x /usr/local/bin/pb-deploy
+
+              # ---------------------------------------------------
+              # 5. Systemd service: Django (gunicorn on 127.0.0.1:8000)
+              # ---------------------------------------------------
+              cat > /etc/systemd/system/${APP_NAME}-django.service << SVC_EOF
+              [Unit]
+              Description=Property Brief Django (gunicorn)
+              After=network.target
+
+              [Service]
+              Type=simple
+              User=$APP_USER
+              WorkingDirectory=$APP_DIR/live/backend
+              EnvironmentFile=$APP_DIR/live/.env
+              ExecStart=$APP_DIR/live/.venv/bin/gunicorn \
+                property_brief.wsgi:application \
+                --bind 127.0.0.1:8000 \
+                --workers 2 \
+                --timeout 120 \
+                --access-logfile - \
+                --error-logfile -
+              Restart=always
+              RestartSec=5
+              StandardOutput=journal
+              StandardError=journal
+
+              [Install]
+              WantedBy=multi-user.target
+              SVC_EOF
+
+              # ---------------------------------------------------
+              # 6. Systemd service: Node.js (Express on 0.0.0.0:3000)
+              # ---------------------------------------------------
+              cat > /etc/systemd/system/${APP_NAME}-node.service << SVC_EOF
+              [Unit]
+              Description=Property Brief Node.js (Express)
+              After=network.target ${APP_NAME}-django.service
+              Requires=${APP_NAME}-django.service
+
+              [Service]
+              Type=simple
+              User=$APP_USER
+              WorkingDirectory=$APP_DIR/live
+              EnvironmentFile=$APP_DIR/live/.env
+              ExecStart=/usr/bin/node dist/index.cjs
+              Restart=always
+              RestartSec=5
+              StandardOutput=journal
+              StandardError=journal
+
+              [Install]
+              WantedBy=multi-user.target
+              SVC_EOF
+
+              # ---------------------------------------------------
+              # 7. Initial deployment (downloads artifact from S3)
+              # ---------------------------------------------------
+              systemctl daemon-reload
+
+              log "Waiting for S3 artifact to be available..."
+              for i in $(seq 1 20); do
+                if aws s3 ls "s3://$S3_BUCKET/$APP_NAME/latest.tar.gz" --region "$AWS_REGION" &>/dev/null; then
+                  log "Artifact found. Running initial deploy..."
+                  /usr/local/bin/pb-deploy && break
+                fi
+                log "Attempt $i/20: artifact not yet available, waiting 30s..."
+                sleep 30
+              done
+
+              systemctl enable ${APP_NAME}-django ${APP_NAME}-node
+
+              log "Bootstrap complete."
+            - DBEndpoint:
+                Fn::ImportValue: !Sub ${AppName}-RDSEndpoint
+              DBName:
+                Fn::ImportValue: !Sub ${AppName}-DBName
+              DBUsername:
+                Fn::ImportValue: !Sub ${AppName}-DBUsername
+              DBSecretName:
+                Fn::ImportValue: !Sub ${AppName}-DBSecretName
+              DjangoSecretKeyName:
+                Fn::ImportValue: !Sub ${AppName}-DjangoSecretKeyName
+              PerplexityApiKeyName:
+                Fn::ImportValue: !Sub ${AppName}-PerplexityApiKeyName
+              ArtifactBucket:
+                Fn::ImportValue: !Sub ${AppName}-ArtifactBucketName
+
+  # Register EC2 instance with the ALB target group
+  ALBTargetGroupAttachment:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroupAttachment
+    DependsOn: ALBListener
+    Properties:
+      TargetGroupArn: !Ref ALBTargetGroup
+      Id: !Ref EC2Instance
+      Port: 3000
+
+Outputs:
+  ApplicationURL:
+    Description: Public URL of the application (via ALB)
+    Value: !Sub http://${LoadBalancer.DNSName}
+
+  InstanceId:
+    Description: EC2 instance ID (use with SSM Session Manager or pb-deploy)
+    Value: !Ref EC2Instance
+
+  PublicIP:
+    Description: EC2 public IP address
+    Value: !GetAtt EC2Instance.PublicIp
+
+  SSMConnectCommand:
+    Description: Connect to the instance via SSM Session Manager (no SSH needed)
+    Value: !Sub aws ssm start-session --target ${EC2Instance} --region ${AWS::Region}
