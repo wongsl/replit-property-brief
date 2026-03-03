@@ -80,6 +80,7 @@ class Document(models.Model):
     email_draft = models.TextField(blank=True, default='')
     ai_score = models.IntegerField(null=True, blank=True)
     ai_analysis = models.JSONField(null=True, blank=True)
+    share_token = models.UUIDField(null=True, blank=True, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

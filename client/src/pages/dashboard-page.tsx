@@ -12,7 +12,7 @@ import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
   ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, Minus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
-  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail
+  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail, Share2
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -1429,6 +1429,12 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
                 emailDraft={file.email_draft}
                 onDraftEmail={() => handleDraftEmail(file.id)}
                 isDraftingEmail={isDraftingEmail && draftEmailDocId === file.id}
+                onShare={async () => {
+                  const res = await fetch(`/api/documents/${file.id}/share/`, { method: 'POST' });
+                  if (!res.ok) throw new Error('Failed to generate share link');
+                  const data = await res.json();
+                  return `${window.location.origin}/share/${data.share_token}`;
+                }}
               />
             </div>
           </TableCell>
@@ -1576,12 +1582,14 @@ function InspectionSection({ title, data }: { title: string; data: any }) {
   );
 }
 
-function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail }: { analysis: any; emailDraft?: string; onDraftEmail?: () => void; isDraftingEmail?: boolean }) {
+function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, onShare }: { analysis: any; emailDraft?: string; onDraftEmail?: () => void; isDraftingEmail?: boolean; onShare?: () => Promise<string> }) {
   const summary = analysis.summary || {};
   const mainSections = ["Roof", "Electrical", "Plumbing", "Foundation", "HVAC"];
   const otherSections = ["Permits", "Pest Inspection"];
   const [showEmailDialog, setShowEmailDialog] = useState(false);
   const [emailCopied, setEmailCopied] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
   const prevEmailDraft = React.useRef(emailDraft);
 
   // Auto-open dialog when a new email draft arrives
@@ -1606,6 +1614,19 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail }:
     setTimeout(() => setEmailCopied(false), 2000);
   };
 
+  const handleShare = async () => {
+    if (!onShare) return;
+    setIsSharing(true);
+    try {
+      const url = await onShare();
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
   return (
     <div className="space-y-4" data-testid="analysis-report">
       <div className="rounded-lg border bg-primary/5 p-4 space-y-2">
@@ -1625,6 +1646,20 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail }:
                   : emailDraft
                     ? <><Mail className="h-3 w-3" />View Email</>
                     : <><Mail className="h-3 w-3" />Draft Email</>}
+              </Button>
+            )}
+            {onShare && (
+              <Button
+                variant="outline" size="sm"
+                className="h-6 gap-1.5 px-2 text-[10px]"
+                onClick={handleShare}
+                disabled={isSharing}
+              >
+                {isSharing
+                  ? <><RefreshCw className="h-3 w-3 animate-spin" />Copying…</>
+                  : shareCopied
+                    ? <><Check className="h-3 w-3 text-green-500" />Copied!</>
+                    : <><Share2 className="h-3 w-3" />Share</>}
               </Button>
             )}
             <CopyButton getText={() => formatAnalysisAsText(analysis)} />

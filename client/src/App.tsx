@@ -12,6 +12,7 @@ import ExplorerPage from "@/pages/explorer-page";
 import AdminPage from "@/pages/admin-page";
 import TeamsPage from "@/pages/teams-page";
 import AccountSettingsPage from "@/pages/account-settings-page";
+import SharedAnalysisPage from "@/pages/shared-analysis-page";
 
 function ProtectedRoute({ component: Component, ...rest }: any) {
   const { user, loading } = useAuth();
@@ -69,6 +70,10 @@ function Router() {
         <AppLayout>
           <ProtectedRoute component={AccountSettingsPage} />
         </AppLayout>
+      </Route>
+
+      <Route path="/share/:token">
+        <SharedAnalysisPage />
       </Route>
 
       <Route component={NotFound} />

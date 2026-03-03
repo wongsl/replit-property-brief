@@ -401,6 +401,32 @@ class DocumentViewSet(viewsets.ModelViewSet):
             is_favorited = True
         return Response({'is_favorited': is_favorited})
 
+    @action(detail=True, methods=['post'])
+    def share(self, request, pk=None):
+        import uuid
+        doc = self.get_object()
+        if not doc.ai_analysis:
+            return Response({'error': 'Document has no analysis to share'}, status=400)
+        if not doc.share_token:
+            doc.share_token = uuid.uuid4()
+            doc.save(update_fields=['share_token'])
+        return Response({'share_token': str(doc.share_token)})
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def share_view(request, token):
+    try:
+        doc = Document.objects.get(share_token=token)
+    except Document.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+    if not doc.ai_analysis:
+        return Response({'error': 'No analysis available'}, status=404)
+    return Response({
+        'name': doc.name,
+        'ai_analysis': doc.ai_analysis,
+    })
+
 
 # --- Permission Views ---
 
