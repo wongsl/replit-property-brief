@@ -1,0 +1,39 @@
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from . import views
+
+router = DefaultRouter()
+router.register(r'folders', views.FolderViewSet, basename='folder')
+router.register(r'documents', views.DocumentViewSet, basename='document')
+router.register(r'permissions', views.DocumentPermissionViewSet, basename='permission')
+router.register(r'combined-analyses', views.CombinedAnalysisViewSet, basename='combined-analysis')
+
+urlpatterns = [
+    path('auth/register/', views.register),
+    path('auth/login/', views.login),
+    path('auth/logout/', views.logout),
+    path('auth/me/', views.me),
+    path('auth/change-password/', views.change_password),
+    path('auth/request-password-reset/', views.request_password_reset),
+    path('auth/reset-password/', views.reset_password),
+    path('teams/', views.teams_list),
+    path('teams/join-request/', views.team_join_request),
+    path('teams/join-requests/', views.team_join_requests_list),
+    path('teams/join-requests/<int:request_id>/resolve/', views.team_join_request_resolve),
+    path('teams/leave/', views.team_leave),
+    path('teams/<int:team_id>/members/', views.team_members),
+    path('admin/users/', views.admin_users),
+    path('admin/users/<int:user_id>/', views.admin_update_user),
+    path('admin/users/<int:user_id>/delete/', views.admin_delete_user),
+    path('admin/apply/', views.admin_apply),
+    path('admin/applications/', views.admin_applications_list),
+    path('admin/applications/<int:application_id>/resolve/', views.admin_application_resolve),
+    path('admin/users/<int:user_id>/grant-credits/', views.admin_grant_credits),
+    path('admin/credit-requests/', views.admin_credit_requests),
+    path('admin/credit-requests/<int:request_id>/resolve/', views.admin_credit_request_resolve),
+    path('credits/', views.my_credits),
+    path('credits/request/', views.credit_request),
+    path('credits/request/cancel/', views.credit_request_cancel),
+    path('share/<uuid:token>/', views.share_view),
+    path('', include(router.urls)),
+]
