@@ -6,4 +6,3 @@ gunicorn>=23.0.0
 pillow>=12.1.1
 psycopg2-binary>=2.9.11
 python-dotenv>=1.0.0
-openai>=6.22.0

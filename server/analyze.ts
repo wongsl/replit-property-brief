@@ -244,7 +244,11 @@ const EMAIL_SYSTEM_PROMPT =
   "Respond with only the email text — no preamble, no markdown headers, no JSON.";
 
 export function registerDraftEmailRoute(app: Express): void {
-  const perplexity = makePerplexityClient();
+  let _perplexity: OpenAI | null = null;
+  const perplexity = () => {
+    if (!_perplexity) _perplexity = makePerplexityClient();
+    return _perplexity;
+  };
 
   app.post("/api/documents/:id/draft-email/", async (req, res) => {
     try {
@@ -268,7 +272,7 @@ export function registerDraftEmailRoute(app: Express): void {
 
       log(`Drafting email for document ${docId}: ${doc.name}`, "analyze");
 
-      const completion = await perplexity.chat.completions.create({
+      const completion = await perplexity().chat.completions.create({
         model: "sonar-pro",
         messages: [
           { role: "system", content: EMAIL_SYSTEM_PROMPT },
@@ -309,7 +313,11 @@ export function registerDraftEmailRoute(app: Express): void {
 
 export function registerAnalyzeRoutes(app: Express): void {
   const objectStorageService = new ObjectStorageService();
-  const perplexity = makePerplexityClient();
+  let perplexity: OpenAI | null = null;
+  const getPerplexity = () => {
+    if (!perplexity) perplexity = makePerplexityClient();
+    return perplexity;
+  };
 
   app.post("/api/documents/:id/analyze/", async (req, res) => {
     try {
@@ -356,7 +364,7 @@ export function registerAnalyzeRoutes(app: Express): void {
       log(`Extracted text preview (first 500 chars): ${documentText.slice(0, 500)}`, "analyze");
       log(`Sending ${truncated.length} chars to Perplexity for analysis`, "analyze");
 
-      const completion = await perplexity.chat.completions.create({
+      const completion = await getPerplexity().chat.completions.create({
         model: "sonar-pro",
         messages: [
           { role: "system", content: buildSystemPrompt() },

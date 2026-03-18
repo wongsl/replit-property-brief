@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { spawn } from "child_process";
+import { existsSync } from "fs";
 import { log } from "./index";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { registerAnalyzeRoutes, registerFolderCombinedAnalysisRoute, registerDraftEmailRoute } from "./analyze";
@@ -10,7 +11,8 @@ import * as path from "path";
 function startDjango(): Promise<void> {
   return new Promise((resolve) => {
     // Use the Python from the venv if available, otherwise fallback to system python
-    const pythonPath = path.join(process.cwd(), ".venv", "bin", "python");
+    const venvPython = path.join(process.cwd(), ".venv", "bin", "python");
+    const pythonPath = existsSync(venvPython) ? venvPython : (process.env.PYTHON_PATH || "python3");
     const host = process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1";
     const django = spawn(pythonPath, ["manage.py", "runserver", `${host}:8000`], {
       cwd: `${process.cwd()}/backend`,
