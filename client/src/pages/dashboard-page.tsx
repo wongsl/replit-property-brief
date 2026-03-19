@@ -694,6 +694,8 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     }
   };
 
+  const [combineStatus, setCombineStatus] = useState("");
+
   const handleCombineAnalysis = async () => {
     const ids = Array.from(selectedDocIds);
     if (ids.length < 2) return;
@@ -704,13 +706,45 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
       toast({ title: "Select documents from the same folder", description: "All selected documents must be in the same folder.", variant: "destructive" });
       return;
     }
-    if ((user?.credits ?? 0) < 1) {
-      toast({ title: "No credits remaining", description: "Request more credits on the Teams page.", variant: "destructive" });
+
+    const needsAnalysis = selected.filter((d: any) => !d.ai_analysis || d.ai_analysis.raw_response !== undefined || !d.ai_analysis.summary);
+    const creditsNeeded = needsAnalysis.length + 1;
+    if ((user?.credits ?? 0) < creditsNeeded) {
+      toast({
+        title: "Not enough credits",
+        description: `This will use ${creditsNeeded} credit${creditsNeeded > 1 ? 's' : ''} (${needsAnalysis.length} for analysis + 1 for combining). You have ${user?.credits ?? 0}.`,
+        variant: "destructive",
+      });
       return;
     }
 
     setIsCombining(true);
     try {
+      // Analyze any docs that are missing analysis first
+      let updatedDocs = [...documents];
+      for (let i = 0; i < needsAnalysis.length; i++) {
+        const doc = needsAnalysis[i];
+        setCombineStatus(`Analyzing "${doc.name}" (${i + 1}/${needsAnalysis.length})...`);
+        const res = await apiFetch(`/api/documents/${doc.id}/analyze/`, {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+        if (res.status === 402) {
+          toast({ title: "No credits remaining", description: "Ran out of credits during analysis.", variant: "destructive" });
+          await refreshUser();
+          return;
+        }
+        if (!res.ok) {
+          toast({ title: `Failed to analyze "${doc.name}"`, description: "Please try again.", variant: "destructive" });
+          return;
+        }
+        const updated = await res.json();
+        updatedDocs = updatedDocs.map(d => d.id === updated.id ? updated : d);
+        setDocuments(updatedDocs);
+        await refreshUser();
+      }
+
+      setCombineStatus("Combining analyses...");
       const res = await apiFetch(`/api/folders/${folderIds[0]}/combined-analysis/`, {
         method: 'POST',
         body: JSON.stringify({ document_ids: ids }),
@@ -731,6 +765,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
       }
     } finally {
       setIsCombining(false);
+      setCombineStatus("");
     }
   };
 
@@ -914,7 +949,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
                 disabled={isCombining}
               >
                 {isCombining ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Layers className="h-3 w-3" />}
-                {isCombining ? "Combining..." : "Combine Analysis"}
+                {isCombining ? (combineStatus || "Working...") : "Combine Analysis"}
               </Button>
             )}
           </div>
