@@ -311,6 +311,111 @@ export function registerDraftEmailRoute(app: Express): void {
   });
 }
 
+const FILE_SCREENING_SYSTEM_PROMPT =
+  "You are screening file names before uploading to a real estate document analysis platform. " +
+  "Your job is to APPROVE only files that are property inspection or condition reports: " +
+  "home inspection reports, pest/termite inspection reports, roof inspection reports, " +
+  "HVAC inspection reports, plumbing inspection reports, electrical inspection reports, " +
+  "foundation inspection reports, sewer inspection reports, pool inspection reports, " +
+  "permit reports, natural hazard disclosures (NHD), and property condition disclosures. " +
+  "REJECT everything else, including: avids, addendums, purchase agreements, contracts, certificates, " +
+  "transaction coordination documents, marketing materials, personal financial documents, " +
+  "spreadsheets, flyers, correspondence, HOA documents, title documents, escrow instructions, " +
+  "and any file whose name does not clearly indicate it is a property inspection or condition report. " +
+  "When in doubt, REJECT the file. " +
+  "Return ONLY a valid JSON object with a single key 'approved' containing an array of the approved file names exactly as provided. " +
+  "Do not include any commentary, markdown, or explanations — respond with the JSON object only.";
+
+export function registerFileScreeningRoute(app: Express): void {
+  let _perplexity: OpenAI | null = null;
+  const perplexity = () => {
+    if (!_perplexity) _perplexity = makePerplexityClient();
+    return _perplexity;
+  };
+
+  app.post("/api/screen-files/", async (req, res) => {
+    try {
+      const { file_names } = req.body as { file_names: string[] };
+      const requestId = (req as any).requestId ?? "-";
+
+      if (!Array.isArray(file_names) || file_names.length === 0) {
+        return res.status(400).json({ error: "file_names must be a non-empty array" });
+      }
+
+      log(`[screen-files] req=${requestId} screening ${file_names.length} files`, "analyze");
+
+      const completion = await perplexity().chat.completions.create({
+        model: "sonar-pro",
+        messages: [
+          { role: "system", content: FILE_SCREENING_SYSTEM_PROMPT },
+          { role: "user", content: `File names to evaluate:\n${JSON.stringify(file_names)}` },
+        ],
+        max_tokens: 500,
+      });
+
+      const rawContent = completion.choices[0]?.message?.content || "";
+
+      let result: { approved: string[] };
+      try {
+        const cleaned = rawContent.replace(/^```json\s*/, "").replace(/```\s*$/, "").trim();
+        result = JSON.parse(cleaned);
+        if (!Array.isArray(result.approved)) throw new Error("missing approved array");
+      } catch {
+        log(`[screen-files] failed to parse AI response: ${rawContent}`, "analyze");
+        return res.status(500).json({ error: "AI returned an invalid response. Please try again." });
+      }
+
+      log(`[screen-files] approved ${result.approved.length}/${file_names.length} files`, "analyze");
+      return res.json(result);
+    } catch (err: any) {
+      log(`[screen-files] error: ${err.message}`, "analyze");
+      return res.status(500).json({ error: "File screening failed: " + err.message });
+    }
+  });
+}
+
+export function registerDocumentDeleteRoutes(app: Express): void {
+  const objectStorageService = new ObjectStorageService();
+
+  app.delete("/api/documents/:id/", async (req, res) => {
+    const docId = req.params.id;
+    const cookies = req.headers.cookie || "";
+    const requestId = (req as any).requestId ?? "-";
+
+    log(`[DELETE] doc=${docId}`, "analyze");
+
+    try {
+      const docRes = await fetch(`http://127.0.0.1:8000/api/documents/${docId}/`, {
+        headers: { Cookie: cookies, "X-Request-Id": requestId },
+      });
+
+      if (!docRes.ok) {
+        return res.status(docRes.status).json({ error: "Document not found" });
+      }
+
+      const doc = (await docRes.json()) as any;
+
+      if (doc.storage_path) {
+        const storagePath = objectStorageService.normalizeObjectEntityPath(doc.storage_path);
+        log(`[DELETE] deleting storage: ${storagePath}`, "analyze");
+        await objectStorageService.deleteObjectEntity(storagePath);
+        log(`[DELETE] storage deleted for doc ${docId}`, "analyze");
+      }
+
+      const deleteRes = await fetch(`http://127.0.0.1:8000/api/documents/${docId}/`, {
+        method: "DELETE",
+        headers: { Cookie: cookies, "X-Request-Id": requestId },
+      });
+
+      log(`[DELETE] Django delete status=${deleteRes.status}`, "analyze");
+      return res.status(deleteRes.status).send();
+    } catch (err: any) {
+      log(`[DELETE] error: ${err.message}`, "analyze");
+      return res.status(500).json({ error: err.message });
+    }
+  });
+}
+
 export function registerAnalyzeRoutes(app: Express): void {
   const objectStorageService = new ObjectStorageService();
   let perplexity: OpenAI | null = null;

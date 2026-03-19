@@ -1,4 +1,5 @@
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -250,6 +251,31 @@ export class ObjectStorageService {
       throw new Error("Local storage is not enabled");
     }
     return localStorageService.saveFile(fileId, fileName, buffer);
+  }
+
+  // Deletes an object entity from storage (S3 or local).
+  async deleteObjectEntity(objectPath: string): Promise<void> {
+    if (!objectPath.startsWith("/objects/")) return;
+
+    if (this.useLocalStorage) {
+      try { await localStorageService.deleteFile(objectPath); } catch { }
+      return;
+    }
+
+    const parts = objectPath.slice(1).split("/");
+    if (parts.length < 2) return;
+
+    const entityId = parts.slice(1).join("/");
+    let entityDir = this.getPrivateObjectDir();
+    if (!entityDir.endsWith("/")) entityDir = `${entityDir}/`;
+    const objectEntityPath = `${entityDir}${entityId}`;
+    const { bucketName, objectKey } = parseObjectPath(objectEntityPath);
+
+    try {
+      await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: objectKey }));
+    } catch (err: any) {
+      console.error(`[objectStorage] Failed to delete S3 object:`, err.message);
+    }
   }
 
   // Tries to set the ACL policy for the object entity and return the normalized path.

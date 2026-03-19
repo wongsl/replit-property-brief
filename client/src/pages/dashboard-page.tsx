@@ -116,6 +116,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
   const [teams, setTeams] = useState<{id: number, name: string}[]>([]);
   const [activeTab, setActiveTab] = useState("my-files");
   const [isUploading, setIsUploading] = useState(false);
+  const [isScreening, setIsScreening] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadCurrent, setUploadCurrent] = useState(0);
   const [uploadTotal, setUploadTotal] = useState(0);
@@ -333,104 +334,172 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     return { matchedFolder: null, suggestedName: "" };
   };
 
-  const handleUpload = async (isPrivate = false) => {
+  const ALLOWED_EXTENSIONS = new Set(['.pdf', '.txt']);
+
+  const filterByType = (files: File[]): { allowed: File[]; rejected: string[] } => {
+    const allowed: File[] = [];
+    const rejected: string[] = [];
+    for (const f of files) {
+      const ext = f.name.slice(f.name.lastIndexOf('.')).toLowerCase();
+      if (ALLOWED_EXTENSIONS.has(ext)) {
+        allowed.push(f);
+      } else {
+        rejected.push(f.name);
+      }
+    }
+    return { allowed, rejected };
+  };
+
+  const uploadFiles = async (files: File[], isPrivate: boolean) => {
+    setIsUploading(true);
+    setUploadTotal(files.length);
+
+    const foldersRes = await apiFetch('/api/folders/');
+    let currentFolders = foldersRes.ok ? await foldersRes.json() : folders;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setUploadCurrent(i + 1);
+      setUploadProgress(0);
+
+      try {
+        const urlRes = await fetch('/api/uploads/request-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: file.name,
+            size: file.size,
+            contentType: file.type || 'application/octet-stream',
+          }),
+        });
+        if (!urlRes.ok) throw new Error('Failed to get upload URL');
+        const { uploadURL, objectPath } = await urlRes.json();
+
+        setUploadProgress(30);
+
+        const s3Res = await fetch(uploadURL, {
+          method: 'PUT',
+          body: file,
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        });
+        if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
+
+        setUploadProgress(70);
+
+        const res = await apiFetch('/api/documents/', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: file.name,
+            storage_path: objectPath,
+            file_size: file.size,
+            is_private: isPrivate,
+          }),
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Document creation failed (${res.status})`);
+        }
+
+        const newDoc = await res.json();
+        const currentFlat = flattenFolders(currentFolders);
+        const { matchedFolder, suggestedName } = categorizeName(file.name, currentFlat);
+
+        if (matchedFolder) {
+          await apiFetch(`/api/documents/${newDoc.id}/move/`, {
+            method: 'POST',
+            body: JSON.stringify({ folder_id: matchedFolder.id }),
+          });
+        } else if (suggestedName) {
+          const folderRes = await apiFetch('/api/folders/', {
+            method: 'POST',
+            body: JSON.stringify({ name: suggestedName }),
+          });
+          if (folderRes.ok) {
+            const newFolder = await folderRes.json();
+            currentFolders = [...currentFolders, newFolder];
+            await apiFetch(`/api/documents/${newDoc.id}/move/`, {
+              method: 'POST',
+              body: JSON.stringify({ folder_id: newFolder.id }),
+            });
+          }
+        }
+
+        setUploadProgress(100);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        console.error(`Upload failed for ${file.name}:`, err);
+        toast({ title: `Failed to upload "${file.name}"`, description: msg, variant: 'destructive' });
+      }
+    }
+
+    loadData();
+    setTimeout(() => {
+      setIsUploading(false);
+      setUploadTotal(0);
+      setUploadCurrent(0);
+    }, 500);
+  };
+
+  const handleUpload = async (isPrivate = false, folderMode = false) => {
     if (!decrementRateLimit()) return;
     setShowUploadDialog(false);
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = true;
+    if (folderMode) {
+      input.setAttribute('webkitdirectory', '');
+      input.setAttribute('directory', '');
+    }
     input.onchange = async (e: any) => {
-      const files: File[] = Array.from(e.target.files || []);
-      if (files.length === 0) return;
-      setIsUploading(true);
-      setUploadTotal(files.length);
+      const raw: File[] = Array.from(e.target.files || []);
+      if (raw.length === 0) return;
 
-      // Fetch current folders once before the loop for categorization
-      const foldersRes = await apiFetch('/api/folders/');
-      let currentFolders = foldersRes.ok ? await foldersRes.json() : folders;
+      // Step 1: filter to PDF and TXT only
+      const { allowed, rejected } = filterByType(raw);
+      if (rejected.length > 0) {
+        toast({
+          title: `${rejected.length} file${rejected.length > 1 ? 's' : ''} skipped`,
+          description: `Only PDF and TXT files are supported. Skipped: ${rejected.slice(0, 3).join(', ')}${rejected.length > 3 ? ` and ${rejected.length - 3} more` : ''}.`,
+        });
+      }
+      if (allowed.length === 0) return;
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        setUploadCurrent(i + 1);
-        setUploadProgress(0);
-
-        try {
-          const urlRes = await fetch('/api/uploads/request-url', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: file.name,
-              size: file.size,
-              contentType: file.type || 'application/octet-stream',
-            }),
-          });
-          if (!urlRes.ok) throw new Error('Failed to get upload URL');
-          const { uploadURL, objectPath } = await urlRes.json();
-
-          setUploadProgress(30);
-
-          const s3Res = await fetch(uploadURL, {
-            method: 'PUT',
-            body: file,
-            headers: { 'Content-Type': file.type || 'application/octet-stream' },
-          });
-          if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
-
-          setUploadProgress(70);
-
-          const res = await apiFetch('/api/documents/', {
-            method: 'POST',
-            body: JSON.stringify({
-              name: file.name,
-              storage_path: objectPath,
-              file_size: file.size,
-              is_private: isPrivate,
-            }),
-          });
-
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            throw new Error(errData.error || `Document creation failed (${res.status})`);
-          }
-
-          const newDoc = await res.json();
-          const currentFlat = flattenFolders(currentFolders);
-          const { matchedFolder, suggestedName } = categorizeName(file.name, currentFlat);
-
-          if (matchedFolder) {
-            await apiFetch(`/api/documents/${newDoc.id}/move/`, {
-              method: 'POST',
-              body: JSON.stringify({ folder_id: matchedFolder.id }),
-            });
-          } else if (suggestedName) {
-            const folderRes = await apiFetch('/api/folders/', {
-              method: 'POST',
-              body: JSON.stringify({ name: suggestedName }),
-            });
-            if (folderRes.ok) {
-              const newFolder = await folderRes.json();
-              currentFolders = [...currentFolders, newFolder];
-              await apiFetch(`/api/documents/${newDoc.id}/move/`, {
-                method: 'POST',
-                body: JSON.stringify({ folder_id: newFolder.id }),
-              });
-            }
-          }
-
-          setUploadProgress(100);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Unknown error';
-          console.error(`Upload failed for ${file.name}:`, err);
-          toast({ title: `Failed to upload "${file.name}"`, description: msg, variant: 'destructive' });
+      // Step 2: AI screening
+      setIsScreening(true);
+      let toUpload: File[] = [];
+      try {
+        const screenRes = await apiFetch('/api/screen-files/', {
+          method: 'POST',
+          body: JSON.stringify({ file_names: allowed.map(f => f.name) }),
+        });
+        if (!screenRes.ok) {
+          const err = await screenRes.json().catch(() => ({}));
+          throw new Error(err.error || `Screening failed (${screenRes.status})`);
         }
+        const { approved } = await screenRes.json() as { approved: string[] };
+        const approvedSet = new Set(approved.map((n: string) => n.toLowerCase()));
+        toUpload = allowed.filter(f => approvedSet.has(f.name.toLowerCase()));
+        const skipped = allowed.length - toUpload.length;
+        toast({
+          title: toUpload.length === 0
+            ? 'No files approved'
+            : `AI approved ${toUpload.length} of ${allowed.length} file${allowed.length > 1 ? 's' : ''}`,
+          description: skipped > 0
+            ? `${skipped} file${skipped > 1 ? 's were' : ' was'} filtered out as not property-related.`
+            : 'All files passed screening.',
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        toast({ title: 'Screening failed', description: msg, variant: 'destructive' });
+        setIsScreening(false);
+        return;
+      } finally {
+        setIsScreening(false);
       }
 
-      loadData();
-      setTimeout(() => {
-        setIsUploading(false);
-        setUploadTotal(0);
-        setUploadCurrent(0);
-      }, 500);
+      if (toUpload.length === 0) return;
+      await uploadFiles(toUpload, isPrivate);
     };
     input.click();
   };
@@ -608,6 +677,23 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     });
   };
 
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedDocIds);
+    if (ids.length === 0) return;
+    const results = await Promise.all(
+      ids.map(id => apiFetch(`/api/documents/${id}/`, { method: 'DELETE' }))
+    );
+    const succeeded = ids.filter((_, i) => results[i].ok);
+    if (succeeded.length > 0) {
+      setSelectedDocIds(new Set());
+      setDocuments(prev => prev.filter(d => !succeeded.includes(d.id)));
+      loadData();
+    }
+    if (succeeded.length < ids.length) {
+      toast({ title: "Some files could not be deleted", description: "Please try again.", variant: "destructive" });
+    }
+  };
+
   const handleCombineAnalysis = async () => {
     const ids = Array.from(selectedDocIds);
     if (ids.length < 2) return;
@@ -753,21 +839,23 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
             <Coins className="h-3.5 w-3.5" />
             {user?.credits ?? 0} {(user?.credits ?? 0) === 1 ? 'credit' : 'credits'} left
           </button>
-<Button onClick={() => { setUploadPrivate(false); setShowUploadDialog(true); }} disabled={isUploading || rateLimitRemaining <= 0} data-testid="button-upload">
-            <UploadCloud className="mr-2 h-4 w-4" />{isUploading ? "Uploading..." : "Upload File"}
+<Button onClick={() => { setUploadPrivate(false); setShowUploadDialog(true); }} disabled={isUploading || isScreening || rateLimitRemaining <= 0} data-testid="button-upload">
+            <UploadCloud className="mr-2 h-4 w-4" />{isScreening ? "Screening..." : isUploading ? "Uploading..." : "Upload Files"}
           </Button>
         </div>
       </div>
 
-      {isUploading && (
+      {(isScreening || isUploading) && (
         <Card className="border-primary/20 bg-primary/5"><CardContent className="pt-6">
           <div className="flex items-center justify-between text-sm mb-2">
             <span className="font-medium">
-              {uploadTotal > 1 ? `Uploading file ${uploadCurrent} of ${uploadTotal}...` : "Uploading..."}
+              {isScreening ? "Screening files with AI..." : uploadTotal > 1 ? `Uploading file ${uploadCurrent} of ${uploadTotal}...` : "Uploading..."}
             </span>
-            <span>{uploadProgress}%</span>
+            {isUploading && !isScreening && <span>{uploadProgress}%</span>}
           </div>
-          <Progress value={uploadProgress} className="h-2" />
+          {isScreening
+            ? <div className="relative h-2 w-full overflow-hidden rounded-full bg-primary/20"><div className="absolute h-full bg-primary animate-pulse w-1/2 rounded-full" /></div>
+            : <Progress value={uploadProgress} className="h-2" />}
         </CardContent></Card>
       )}
 
@@ -796,10 +884,10 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
         </div>
       </div>
 
-      {selectedDocIds.size >= 2 && (
+      {selectedDocIds.size >= 1 && (
         <div className="flex items-center gap-3 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-2.5">
           <Layers className="h-4 w-4 text-indigo-500 shrink-0" />
-          <span className="text-sm font-medium text-indigo-600">{selectedDocIds.size} documents selected</span>
+          <span className="text-sm font-medium text-indigo-600">{selectedDocIds.size} {selectedDocIds.size === 1 ? 'document' : 'documents'} selected</span>
           <div className="ml-auto flex items-center gap-2">
             <Button
               size="sm"
@@ -811,13 +899,24 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
             </Button>
             <Button
               size="sm"
-              className="h-7 gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
-              onClick={handleCombineAnalysis}
-              disabled={isCombining}
+              variant="outline"
+              className="h-7 gap-1.5 text-xs border-destructive/50 text-destructive hover:bg-destructive/10"
+              onClick={handleBulkDelete}
             >
-              {isCombining ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Layers className="h-3 w-3" />}
-              {isCombining ? "Combining..." : "Combine Analysis"}
+              <Trash2 className="h-3 w-3" />
+              Delete {selectedDocIds.size === 1 ? 'File' : `${selectedDocIds.size} Files`}
             </Button>
+            {selectedDocIds.size >= 2 && (
+              <Button
+                size="sm"
+                className="h-7 gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+                onClick={handleCombineAnalysis}
+                disabled={isCombining}
+              >
+                {isCombining ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Layers className="h-3 w-3" />}
+                {isCombining ? "Combining..." : "Combine Analysis"}
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -987,9 +1086,9 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Upload Files</DialogTitle>
-            <DialogDescription>Choose your privacy setting before selecting files.</DialogDescription>
+            <DialogDescription>Only PDF and TXT files are accepted. AI screens files before uploading.</DialogDescription>
           </DialogHeader>
-          <div className="py-4 space-y-3">
+          <div className="py-2 space-y-3">
             {user?.team ? (
               <button
                 onClick={() => setUploadPrivate(!uploadPrivate)}
@@ -1002,7 +1101,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
                   <p className="text-sm font-medium">{uploadPrivate ? 'Private (only you)' : `Shared with ${user.team_name || 'team'}`}</p>
                   <p className="text-xs text-muted-foreground">{uploadPrivate ? 'Hidden from team view' : 'Visible in Team Files'}</p>
                 </div>
-                <span className="ml-auto text-xs text-muted-foreground">click to toggle</span>
+                <span className="ml-auto text-xs text-muted-foreground shrink-0">click to toggle</span>
               </button>
             ) : (
               <div className="flex items-center gap-3 rounded-lg border p-3 text-muted-foreground">
@@ -1013,12 +1112,31 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
                 </div>
               </div>
             )}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => handleUpload(uploadPrivate, false)}
+                className="flex flex-col items-center gap-2 rounded-lg border p-4 text-center hover:bg-muted/50 transition-colors"
+              >
+                <UploadCloud className="h-6 w-6 text-primary" />
+                <div>
+                  <p className="text-sm font-medium">Choose Files</p>
+                  <p className="text-xs text-muted-foreground">Select individual files</p>
+                </div>
+              </button>
+              <button
+                onClick={() => handleUpload(uploadPrivate, true)}
+                className="flex flex-col items-center gap-2 rounded-lg border p-4 text-center hover:bg-muted/50 transition-colors"
+              >
+                <FolderOpen className="h-6 w-6 text-primary" />
+                <div>
+                  <p className="text-sm font-medium">Upload Folder</p>
+                  <p className="text-xs text-muted-foreground">Select an entire folder</p>
+                </div>
+              </button>
+            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowUploadDialog(false)}>Cancel</Button>
-            <Button onClick={() => handleUpload(uploadPrivate)}>
-              <UploadCloud className="mr-2 h-4 w-4" />Choose Files
-            </Button>
+            <Button variant="outline" className="w-full" onClick={() => setShowUploadDialog(false)}>Cancel</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
