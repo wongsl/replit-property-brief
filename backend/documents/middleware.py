@@ -1,7 +1,32 @@
+import json
 import time
 import logging
 
 logger = logging.getLogger("api")
+
+# Built-in LogRecord attributes to exclude from the JSON output
+_LOG_RECORD_BUILTINS = frozenset({
+    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+    "created", "msecs", "relativeCreated", "thread", "threadName",
+    "processName", "process", "message", "taskName",
+})
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        record.message = record.getMessage()
+        data = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "source": "django",
+        }
+        for key, value in record.__dict__.items():
+            if key not in _LOG_RECORD_BUILTINS:
+                data[key] = value
+        if record.exc_info:
+            data["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(data)
 
 
 class RequestLoggingMiddleware:
@@ -16,15 +41,20 @@ class RequestLoggingMiddleware:
 
         duration_ms = int((time.monotonic() - start) * 1000)
         user_id = request.session.get("user_id", "-") if hasattr(request, "session") else "-"
+        username = getattr(request.user, "username", "-") if hasattr(request, "user") and request.user.is_authenticated else "-"
 
         logger.info(
-            "[%s] %s %s %d %dms user=%s",
-            request_id,
-            request.method,
-            request.path,
-            response.status_code,
-            duration_ms,
-            user_id,
+            "request",
+            extra={
+                "event": "request",
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+                "user_id": user_id,
+                "username": username,
+            },
         )
 
         return response

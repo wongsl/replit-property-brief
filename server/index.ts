@@ -45,15 +45,27 @@ app.use((req, res, next) => {
 });
 
 export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
+  console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: "info", source, message }));
 }
+
+// Fetch user info for Express-handled API routes so it's available for logging
+app.use(async (req, _res, next) => {
+  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/) || req.path === '/api/screen-files/';
+  if (isExpressHandled && req.headers.cookie) {
+    try {
+      const meRes = await fetch("http://127.0.0.1:8000/api/me/", {
+        headers: { Cookie: req.headers.cookie },
+      });
+      if (meRes.ok) {
+        const user = await meRes.json() as { id: number; username: string };
+        (req as any).userInfo = { id: user.id, username: user.username };
+      }
+    } catch {
+      // ignore — user info is best-effort for logging
+    }
+  }
+  next();
+});
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -63,7 +75,20 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       const requestId = (req as any).requestId ?? "-";
-      log(`[${requestId}] ${req.method} ${path} ${res.statusCode} in ${duration}ms`);
+      const userInfo = (req as any).userInfo;
+      console.log(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        source: "express",
+        event: "request",
+        request_id: requestId,
+        method: req.method,
+        path,
+        status_code: res.statusCode,
+        duration_ms: duration,
+        user_id: userInfo?.id ?? null,
+        username: userInfo?.username ?? null,
+      }));
     }
   });
 
@@ -84,7 +109,18 @@ app.use((req, res, next) => {
     const message = err.message || "Internal Server Error";
     const requestId = (_req as any).requestId ?? "-";
 
-    console.error(`[${requestId}] Internal Server Error:`, err);
+    const userInfo = (_req as any).userInfo;
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: "error",
+      source: "express",
+      event: err.name ?? "InternalServerError",
+      request_id: requestId,
+      error_message: message,
+      user_id: userInfo?.id ?? null,
+      username: userInfo?.username ?? null,
+      stack: err.stack ?? null,
+    }));
 
     if (res.headersSent) {
       return next(err);

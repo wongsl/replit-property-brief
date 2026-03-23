@@ -87,15 +87,14 @@ LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
     'formatters': {
-        'api': {
-            'format': '{asctime} [django] {message}',
-            'style': '{',
+        'json': {
+            '()': 'documents.middleware.JsonFormatter',
         },
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
-            'formatter': 'api',
+            'formatter': 'json',
         },
     },
     'loggers': {
