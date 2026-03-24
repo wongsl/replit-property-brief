@@ -1,0 +1,43 @@
+modules = ["nodejs-20", "python-3.11", "bash", "web", "postgresql-16"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=5000 npm run dev"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[deployment]
+deploymentTarget = "autoscale"
+run = ["bash", "-c", "cd backend && python3 manage.py migrate --run-syncdb 2>/dev/null || python3 manage.py migrate --fake-initial 2>/dev/null || true && python3 create_admin.py && cd .. && SKIP_DJANGO_SPAWN=true python3 -m gunicorn --bind=127.0.0.1:8000 property_brief.wsgi:application --chdir backend & PORT=5000 node dist/index.cjs"]
+build = ["npm", "run", "build"]
+
+[userenv]
+
+[userenv.shared]
