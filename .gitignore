@@ -1,3 +1,7 @@
+# Replit config (may contain secrets in [userenv] section)
+.replit
+replit.nix
+
 # Dependencies
 node_modules/
 
