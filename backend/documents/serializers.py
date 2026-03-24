@@ -101,6 +101,28 @@ class DocumentSerializer(serializers.ModelSerializer):
         read_only_fields = ['owner', 'owner_name', 'file_size', 'status', 'share_token']
 
 
+class AdminDocumentSerializer(serializers.ModelSerializer):
+    owner_id = serializers.IntegerField(source='owner.id', read_only=True)
+    owner_name = serializers.CharField(source='owner.username', read_only=True)
+    team_id = serializers.IntegerField(source='team.id', read_only=True, allow_null=True)
+    team_name = serializers.CharField(source='team.name', read_only=True, allow_null=True)
+    folder_name = serializers.SerializerMethodField()
+    analyzed = serializers.SerializerMethodField()
+
+    def get_folder_name(self, obj):
+        return obj.folder.full_path if obj.folder else None
+
+    def get_analyzed(self, obj):
+        return obj.ai_analysis is not None
+
+    class Meta:
+        model = Document
+        fields = [
+            'id', 'name', 'file_type', 'file_size', 'status', 'created_at',
+            'owner_id', 'owner_name', 'team_id', 'team_name', 'folder_name', 'analyzed',
+        ]
+
+
 class AdminRequestSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
     email = serializers.CharField(source='user.email', read_only=True)

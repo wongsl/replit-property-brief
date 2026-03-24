@@ -9,11 +9,26 @@ import {
 } from "@/components/ui/dialog";
 import {
   FileText, FileImage, FileCode, FileIcon, Search, FolderOpen,
-  MoreVertical, Eye, ChevronRight, ChevronDown, Sparkles,
+  MoreVertical, Eye, ChevronRight, ChevronDown, Sparkles, Users, User,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+
+type AdminDoc = {
+  id: number;
+  name: string;
+  file_type: string;
+  file_size: string;
+  status: string;
+  created_at: string;
+  owner_id: number;
+  owner_name: string;
+  team_id: number | null;
+  team_name: string | null;
+  folder_name: string | null;
+  analyzed: boolean;
+};
 
 async function apiFetch(url: string) {
   return fetch(url, { credentials: 'include' });
@@ -26,6 +41,10 @@ export default function ExplorerPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<any>(null);
+  const [viewMode, setViewMode] = useState<'folder' | 'all'>('folder');
+  const [adminDocuments, setAdminDocuments] = useState<AdminDoc[] | null>(null);
+  const [adminDocsLoading, setAdminDocsLoading] = useState(false);
+  const [collapsedUserGroups, setCollapsedUserGroups] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     Promise.all([
@@ -59,6 +78,48 @@ export default function ExplorerPage() {
     return grouped;
   }, [filteredDocs, folders]);
 
+  const handleSwitchToAll = async () => {
+    setViewMode('all');
+    if (!adminDocuments) {
+      setAdminDocsLoading(true);
+      const res = await apiFetch('/api/admin/documents/');
+      if (res.ok) setAdminDocuments(await res.json());
+      setAdminDocsLoading(false);
+    }
+  };
+
+  const filteredAdminDocs = useMemo(() => {
+    if (!adminDocuments) return [];
+    if (!searchQuery) return adminDocuments;
+    const q = searchQuery.toLowerCase();
+    return adminDocuments.filter(d =>
+      d.name.toLowerCase().includes(q) ||
+      d.folder_name?.toLowerCase().includes(q) ||
+      d.owner_name.toLowerCase().includes(q) ||
+      d.team_name?.toLowerCase().includes(q)
+    );
+  }, [adminDocuments, searchQuery]);
+
+  const adminGrouped = useMemo(() => {
+    const byTeam: Record<string, Record<string, AdminDoc[]>> = {};
+    for (const doc of filteredAdminDocs) {
+      const team = doc.team_name ?? 'No Team';
+      const user = doc.owner_name;
+      if (!byTeam[team]) byTeam[team] = {};
+      if (!byTeam[team][user]) byTeam[team][user] = [];
+      byTeam[team][user].push(doc);
+    }
+    return byTeam;
+  }, [filteredAdminDocs]);
+
+  const toggleUserGroup = (key: string) => {
+    setCollapsedUserGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
   const getFileIcon = (type: string) => {
     if (type === "pdf") return <FileText className="h-8 w-8 text-red-500" />;
     if (type === "image") return <FileImage className="h-8 w-8 text-purple-500" />;
@@ -80,73 +141,171 @@ export default function ExplorerPage() {
           <h2 className="text-3xl font-display font-bold tracking-tight">File Explorer</h2>
           <p className="text-muted-foreground">View-only access to organization resources.</p>
         </div>
-        <div className="relative w-full max-w-sm">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search folders or files..." className="pl-9 bg-card" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} data-testid="input-explorer-search" />
+        <div className="flex items-center gap-3">
+          {user?.role === 'admin' && (
+            <div className="flex rounded-lg border bg-card p-1 gap-1">
+              <button
+                onClick={() => setViewMode('folder')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'folder' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                My Team
+              </button>
+              <button
+                onClick={handleSwitchToAll}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'all' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                <Users className="h-3.5 w-3.5" />
+                All Files
+              </button>
+            </div>
+          )}
+          <div className="relative w-full max-w-sm">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input placeholder="Search folders or files..." className="pl-9 bg-card" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} data-testid="input-explorer-search" />
+          </div>
         </div>
       </div>
 
       <div className="space-y-6">
-        {Object.entries(groupedDocs).map(([group, files]) => (
-          <div key={group} className="space-y-4">
-            <button onClick={() => toggleGroup(group)} className="flex items-center gap-2 group w-full text-left">
-              {collapsedGroups.includes(group) ? <ChevronRight className="h-5 w-5 text-muted-foreground" /> : <ChevronDown className="h-5 w-5 text-muted-foreground" />}
-              <FolderOpen className="h-5 w-5 text-primary" />
-              <h3 className="font-bold uppercase tracking-wider text-sm">{group}</h3>
-              <Badge variant="secondary" className="ml-2">{files.length}</Badge>
-              <div className="flex-1 h-px bg-border ml-4" />
-            </button>
-            {!collapsedGroups.includes(group) && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                {files.map((file: any) => (
-                  <Card
-                    key={file.id}
-                    className="group hover:border-primary/50 transition-all hover:shadow-md cursor-pointer overflow-hidden border-border/40 bg-card/50"
-                    onClick={() => setSelectedFile(file)}
-                  >
-                    <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative">
-                      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                            <Button variant="ghost" size="icon" className="h-6 w-6"><MoreVertical className="h-4 w-4" /></Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent>
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setSelectedFile(file); }}>
-                              <Eye className="mr-2 h-4 w-4" /> View Details
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                      <div className="p-4 bg-background rounded-xl group-hover:scale-110 transition-transform shadow-sm border">
-                        {getFileIcon(file.file_type)}
-                      </div>
-                      <div className="space-y-1 w-full overflow-hidden">
-                        <p className="font-medium text-sm truncate px-2">{file.name}</p>
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-widest">{file.file_size} &middot; {file.file_type}</p>
-                      </div>
-                      <div className="flex flex-wrap justify-center gap-1">
-                        {hasAnalysis(file) && (
-                          <Badge className="text-[9px] h-4 px-1.5 gap-1 bg-green-500/10 text-green-600 border-green-500/20">
-                            <Sparkles className="h-2.5 w-2.5" />Analyzed
-                          </Badge>
-                        )}
-                        {file.tags?.slice(0, 2).map((t: any) => (
-                          <Badge key={t.id} variant="outline" className="text-[9px] h-4 px-1 lowercase font-normal">{t.name}</Badge>
-                        ))}
-                        {file.tags?.length > 2 && <Badge variant="outline" className="text-[9px] h-4 px-1">+{file.tags.length - 2}</Badge>}
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
+        {viewMode === 'all' ? (
+          adminDocsLoading ? (
+            <div className="py-20 text-center text-muted-foreground">Loading all files...</div>
+          ) : (
+            <>
+              {Object.keys(adminGrouped).sort((a, b) => {
+                if (a === 'No Team') return 1;
+                if (b === 'No Team') return -1;
+                return a.localeCompare(b);
+              }).map((teamName) => {
+                const teamCollapsed = collapsedGroups.includes(teamName);
+                const userMap = adminGrouped[teamName];
+                const teamTotal = Object.values(userMap).reduce((n, docs) => n + docs.length, 0);
+                return (
+                  <div key={teamName} className="space-y-4">
+                    <button onClick={() => toggleGroup(teamName)} className="flex items-center gap-2 w-full text-left">
+                      {teamCollapsed ? <ChevronRight className="h-5 w-5 text-muted-foreground" /> : <ChevronDown className="h-5 w-5 text-muted-foreground" />}
+                      <Users className="h-5 w-5 text-primary" />
+                      <h3 className="font-bold uppercase tracking-wider text-sm">{teamName}</h3>
+                      <Badge variant="secondary" className="ml-2">{teamTotal}</Badge>
+                      <div className="flex-1 h-px bg-border ml-4" />
+                    </button>
+                    {!teamCollapsed && Object.keys(userMap).sort((a, b) => a.localeCompare(b)).map((userName) => {
+                      const userKey = `${teamName}::${userName}`;
+                      const userCollapsed = collapsedUserGroups.has(userKey);
+                      const docs = userMap[userName];
+                      return (
+                        <div key={userKey} className="space-y-3 pl-6">
+                          <button onClick={() => toggleUserGroup(userKey)} className="flex items-center gap-2 w-full text-left">
+                            {userCollapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                            <User className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm font-medium text-muted-foreground">@{userName}</span>
+                            <Badge variant="outline" className="ml-1 text-xs">{docs.length}</Badge>
+                          </button>
+                          {!userCollapsed && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                              {docs.map((file) => (
+                                <Card
+                                  key={file.id}
+                                  className="group hover:border-primary/50 transition-all hover:shadow-md cursor-pointer overflow-hidden border-border/40 bg-card/50"
+                                  onClick={() => setSelectedFile(file)}
+                                >
+                                  <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative">
+                                    <div className="p-4 bg-background rounded-xl group-hover:scale-110 transition-transform shadow-sm border">
+                                      {getFileIcon(file.file_type)}
+                                    </div>
+                                    <div className="space-y-1 w-full overflow-hidden">
+                                      <p className="font-medium text-sm truncate px-2">{file.name}</p>
+                                      <p className="text-[10px] text-muted-foreground uppercase tracking-widest">{file.file_size} &middot; {file.file_type}</p>
+                                    </div>
+                                    {file.analyzed && (
+                                      <Badge className="text-[9px] h-4 px-1.5 gap-1 bg-green-500/10 text-green-600 border-green-500/20">
+                                        <Sparkles className="h-2.5 w-2.5" />Analyzed
+                                      </Badge>
+                                    )}
+                                  </CardContent>
+                                </Card>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+              {Object.keys(adminGrouped).length === 0 && (
+                <div className="py-20 text-center space-y-4 border-2 border-dashed rounded-3xl bg-muted/20">
+                  <Search className="h-6 w-6 text-muted-foreground mx-auto" />
+                  <p className="text-muted-foreground">No files found.</p>
+                </div>
+              )}
+            </>
+          )
+        ) : (
+          <>
+            {Object.entries(groupedDocs).map(([group, files]) => (
+              <div key={group} className="space-y-4">
+                <button onClick={() => toggleGroup(group)} className="flex items-center gap-2 group w-full text-left">
+                  {collapsedGroups.includes(group) ? <ChevronRight className="h-5 w-5 text-muted-foreground" /> : <ChevronDown className="h-5 w-5 text-muted-foreground" />}
+                  <FolderOpen className="h-5 w-5 text-primary" />
+                  <h3 className="font-bold uppercase tracking-wider text-sm">{group}</h3>
+                  <Badge variant="secondary" className="ml-2">{files.length}</Badge>
+                  <div className="flex-1 h-px bg-border ml-4" />
+                </button>
+                {!collapsedGroups.includes(group) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                    {files.map((file: any) => (
+                      <Card
+                        key={file.id}
+                        className="group hover:border-primary/50 transition-all hover:shadow-md cursor-pointer overflow-hidden border-border/40 bg-card/50"
+                        onClick={() => setSelectedFile(file)}
+                      >
+                        <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative">
+                          <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                                <Button variant="ghost" size="icon" className="h-6 w-6"><MoreVertical className="h-4 w-4" /></Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent>
+                                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setSelectedFile(file); }}>
+                                  <Eye className="mr-2 h-4 w-4" /> View Details
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                          <div className="p-4 bg-background rounded-xl group-hover:scale-110 transition-transform shadow-sm border">
+                            {getFileIcon(file.file_type)}
+                          </div>
+                          <div className="space-y-1 w-full overflow-hidden">
+                            <p className="font-medium text-sm truncate px-2">{file.name}</p>
+                            <p className="text-[10px] text-muted-foreground uppercase tracking-widest">{file.file_size} &middot; {file.file_type}</p>
+                          </div>
+                          <div className="flex flex-wrap justify-center gap-1">
+                            {hasAnalysis(file) && (
+                              <Badge className="text-[9px] h-4 px-1.5 gap-1 bg-green-500/10 text-green-600 border-green-500/20">
+                                <Sparkles className="h-2.5 w-2.5" />Analyzed
+                              </Badge>
+                            )}
+                            {file.tags?.slice(0, 2).map((t: any) => (
+                              <Badge key={t.id} variant="outline" className="text-[9px] h-4 px-1 lowercase font-normal">{t.name}</Badge>
+                            ))}
+                            {file.tags?.length > 2 && <Badge variant="outline" className="text-[9px] h-4 px-1">+{file.tags.length - 2}</Badge>}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            {Object.keys(groupedDocs).length === 0 && (
+              <div className="py-20 text-center space-y-4 border-2 border-dashed rounded-3xl bg-muted/20">
+                <Search className="h-6 w-6 text-muted-foreground mx-auto" />
+                <p className="text-muted-foreground">No files found.</p>
               </div>
             )}
-          </div>
-        ))}
-        {Object.keys(groupedDocs).length === 0 && (
-          <div className="py-20 text-center space-y-4 border-2 border-dashed rounded-3xl bg-muted/20">
-            <Search className="h-6 w-6 text-muted-foreground mx-auto" />
-            <p className="text-muted-foreground">No files found.</p>
-          </div>
+          </>
         )}
       </div>
 
@@ -173,6 +332,9 @@ export default function ExplorerPage() {
                 <div><span className="text-muted-foreground">Size:</span> {selectedFile.file_size}</div>
                 <div><span className="text-muted-foreground">Owner:</span> {selectedFile.owner_name}</div>
                 <div><span className="text-muted-foreground">Folder:</span> {selectedFile.folder_name || "—"}</div>
+                {selectedFile.team_name && (
+                  <div><span className="text-muted-foreground">Team:</span> {selectedFile.team_name}</div>
+                )}
                 {selectedFile.tags?.length > 0 && (
                   <div className="col-span-2 flex flex-wrap gap-1 items-center">
                     <span className="text-muted-foreground">Tags:</span>

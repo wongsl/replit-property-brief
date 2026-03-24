@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/lib/mock-auth";
 import { Redirect } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Users, Activity, ShieldAlert, Settings, MoreVertical, Trash2, UserCog,
-  CheckCircle, XCircle, ShieldCheck, Coins, Plus, Minus
+  CheckCircle, XCircle, ShieldCheck, Coins, Plus, Minus, Files, ChevronDown, ChevronRight
 } from "lucide-react";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -21,6 +21,21 @@ import {
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+
+type AdminDoc = {
+  id: number;
+  name: string;
+  file_type: string;
+  file_size: string;
+  status: string;
+  created_at: string;
+  owner_id: number;
+  owner_name: string;
+  team_id: number | null;
+  team_name: string | null;
+  folder_name: string | null;
+  analyzed: boolean;
+};
 
 async function apiFetch(url: string, options: RequestInit = {}) {
   return fetch(url, {
@@ -44,6 +59,47 @@ export default function AdminPage() {
   const [grantTarget, setGrantTarget] = useState<any>(null);
   const [grantAmount, setGrantAmount] = useState("5");
   const [isGranting, setIsGranting] = useState(false);
+  const [allDocuments, setAllDocuments] = useState<AdminDoc[] | null>(null);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [collapsedTeams, setCollapsedTeams] = useState<Set<string>>(new Set());
+  const [collapsedUsers, setCollapsedUsers] = useState<Set<string>>(new Set());
+
+  const loadAllDocuments = async () => {
+    setDocsLoading(true);
+    const res = await apiFetch('/api/admin/documents/');
+    if (res.ok) setAllDocuments(await res.json());
+    setDocsLoading(false);
+  };
+
+  // Group documents: { teamName -> { userName -> AdminDoc[] } }
+  const groupedDocs = useMemo(() => {
+    if (!allDocuments) return null;
+    const byTeam: Record<string, Record<string, AdminDoc[]>> = {};
+    for (const doc of allDocuments) {
+      const team = doc.team_name ?? "No Team";
+      const user = doc.owner_name;
+      if (!byTeam[team]) byTeam[team] = {};
+      if (!byTeam[team][user]) byTeam[team][user] = [];
+      byTeam[team][user].push(doc);
+    }
+    return byTeam;
+  }, [allDocuments]);
+
+  const toggleTeam = (team: string) => {
+    setCollapsedTeams(prev => {
+      const next = new Set(prev);
+      if (next.has(team)) next.delete(team); else next.add(team);
+      return next;
+    });
+  };
+
+  const toggleUser = (key: string) => {
+    setCollapsedUsers(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
 
   const loadUsers = () => {
     apiFetch('/api/admin/users/').then(async (res) => {
@@ -442,6 +498,111 @@ export default function AdminPage() {
             </TableBody>
           </Table>
         </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Files className="h-5 w-5" />
+                All Files
+              </CardTitle>
+              <CardDescription>Every file across all users, grouped by team and user.</CardDescription>
+            </div>
+            {allDocuments === null ? (
+              <Button variant="outline" size="sm" onClick={loadAllDocuments} disabled={docsLoading}>
+                {docsLoading ? "Loading..." : "Load Files"}
+              </Button>
+            ) : (
+              <span className="text-sm text-muted-foreground">{allDocuments.length} file{allDocuments.length !== 1 ? 's' : ''}</span>
+            )}
+          </div>
+        </CardHeader>
+        {groupedDocs && (
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="pl-6">Name</TableHead>
+                  <TableHead>Folder</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Size</TableHead>
+                  <TableHead>Analyzed</TableHead>
+                  <TableHead>Date</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {Object.keys(groupedDocs).sort((a, b) => {
+                  if (a === "No Team") return 1;
+                  if (b === "No Team") return -1;
+                  return a.localeCompare(b);
+                }).map((teamName) => {
+                  const teamCollapsed = collapsedTeams.has(teamName);
+                  const userMap = groupedDocs[teamName];
+                  const teamTotal = Object.values(userMap).reduce((n, docs) => n + docs.length, 0);
+                  return (
+                    <React.Fragment key={`team-${teamName}`}>
+                      <TableRow
+                        className="bg-muted/60 cursor-pointer hover:bg-muted/80"
+                        onClick={() => toggleTeam(teamName)}
+                      >
+                        <TableCell colSpan={6} className="py-2 font-semibold">
+                          <span className="inline-flex items-center gap-2">
+                            {teamCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                            <Users className="h-4 w-4" />
+                            {teamName}
+                            <span className="font-normal text-muted-foreground text-xs ml-1">{teamTotal} file{teamTotal !== 1 ? 's' : ''}</span>
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                      {!teamCollapsed && Object.keys(userMap).sort((a, b) => a.localeCompare(b)).map((userName) => {
+                        const userKey = `${teamName}::${userName}`;
+                        const userCollapsed = collapsedUsers.has(userKey);
+                        const docs = userMap[userName];
+                        return (
+                          <React.Fragment key={`user-${userKey}`}>
+                            <TableRow
+                              className="bg-muted/20 cursor-pointer hover:bg-muted/40"
+                              onClick={() => toggleUser(userKey)}
+                            >
+                              <TableCell colSpan={6} className="py-1.5 pl-10 text-sm">
+                                <span className="inline-flex items-center gap-2 text-muted-foreground">
+                                  {userCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                  @{userName}
+                                  <span className="text-xs">{docs.length} file{docs.length !== 1 ? 's' : ''}</span>
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                            {!userCollapsed && docs.map((doc) => (
+                              <TableRow key={doc.id} className="hover:bg-muted/10">
+                                <TableCell className="pl-16 text-sm">{doc.name}</TableCell>
+                                <TableCell className="text-muted-foreground text-sm">{doc.folder_name ?? <span className="italic">—</span>}</TableCell>
+                                <TableCell><Badge variant="outline" className="text-xs uppercase">{doc.file_type}</Badge></TableCell>
+                                <TableCell className="text-muted-foreground text-sm">{doc.file_size}</TableCell>
+                                <TableCell>
+                                  {doc.analyzed
+                                    ? <CheckCircle className="h-4 w-4 text-green-500" />
+                                    : <span className="text-muted-foreground text-xs">—</span>}
+                                </TableCell>
+                                <TableCell className="text-muted-foreground text-sm">
+                                  {new Date(doc.created_at).toLocaleDateString()}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </React.Fragment>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+                {allDocuments?.length === 0 && (
+                  <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">No files found</TableCell></TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </CardContent>
+        )}
       </Card>
 
       {/* Grant Credits Dialog */}

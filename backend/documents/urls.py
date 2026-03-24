@@ -31,6 +31,7 @@ urlpatterns = [
     path('admin/users/<int:user_id>/grant-credits/', views.admin_grant_credits),
     path('admin/credit-requests/', views.admin_credit_requests),
     path('admin/credit-requests/<int:request_id>/resolve/', views.admin_credit_request_resolve),
+    path('admin/documents/', views.admin_documents),
     path('credits/', views.my_credits),
     path('credits/request/', views.credit_request),
     path('credits/request/cancel/', views.credit_request_cancel),

@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import logging
 
@@ -29,6 +30,19 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(data)
 
 
+_UUID_RE = re.compile(r'/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
+_ID_RE = re.compile(r'/\d+')
+
+
+def path_to_event(path: str) -> str:
+    """Derive a log event name from a URL path, e.g. /api/auth/reset-password/ → auth_reset_password."""
+    path = _UUID_RE.sub('', path)
+    path = _ID_RE.sub('', path)
+    path = re.sub(r'^/api/', '', path).rstrip('/')
+    path = re.sub(r'[-/]', '_', path)
+    return path or 'unknown'
+
+
 class RequestLoggingMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
@@ -46,7 +60,7 @@ class RequestLoggingMiddleware:
         logger.info(
             "request",
             extra={
-                "event": "request",
+                "event": path_to_event(request.path),
                 "request_id": request_id,
                 "method": request.method,
                 "path": request.path,

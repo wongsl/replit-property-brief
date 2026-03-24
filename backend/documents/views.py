@@ -888,6 +888,18 @@ def admin_grant_credits(request, user_id):
     return Response({'credits': target_user.credits})
 
 
+@api_view(['GET'])
+@permission_classes([IsAdmin])
+def admin_documents(request):
+    """Return all documents across all users, ordered by team then owner."""
+    from .serializers import AdminDocumentSerializer
+    documents = Document.objects.select_related('owner', 'team', 'folder__parent').order_by(
+        'team__name', 'owner__username', 'name'
+    )
+    data = AdminDocumentSerializer(documents, many=True).data
+    return Response(data)
+
+
 # --- Combined Analysis Views ---
 
 class CombinedAnalysisViewSet(viewsets.ModelViewSet):

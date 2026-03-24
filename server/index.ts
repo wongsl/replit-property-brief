@@ -44,6 +44,16 @@ app.use((req, res, next) => {
   express.urlencoded({ extended: false })(req, res, next);
 });
 
+function pathToEvent(path: string): string {
+  return path
+    .replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '')
+    .replace(/\/\d+/g, '')
+    .replace(/^\/api\//, '')
+    .replace(/\/$/, '')
+    .replace(/[-/]/g, '_')
+    || 'unknown';
+}
+
 export function log(message: string, source = "express") {
   console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: "info", source, message }));
 }
@@ -80,7 +90,7 @@ app.use((req, res, next) => {
         timestamp: new Date().toISOString(),
         level: "info",
         source: "express",
-        event: "request",
+        event: pathToEvent(path),
         request_id: requestId,
         method: req.method,
         path,
