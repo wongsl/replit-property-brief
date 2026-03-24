@@ -1,57 +1,12 @@
-import { useState } from "react";
 import { useAuth } from "@/lib/mock-auth";
-import { useToast } from "@/hooks/use-toast";
+import { useClerk } from "@clerk/clerk-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { KeyRound } from "lucide-react";
 
-async function apiFetch(url: string, options: RequestInit = {}) {
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-    credentials: 'include',
-  });
-  return res;
-}
-
 export default function AccountSettingsPage() {
   const { user } = useAuth();
-  const { toast } = useToast();
-
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  const handleChangePassword = async () => {
-    if (newPassword !== confirmPassword) {
-      toast({ title: "Passwords don't match", description: "New password and confirmation must match.", variant: "destructive" });
-      return;
-    }
-    setSaving(true);
-    try {
-      const res = await apiFetch('/api/auth/change-password/', {
-        method: 'POST',
-        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        toast({ title: "Error", description: data.error ?? "Failed to update password.", variant: "destructive" });
-      } else {
-        toast({ title: "Password updated", description: "Your password has been changed successfully." });
-        setCurrentPassword("");
-        setNewPassword("");
-        setConfirmPassword("");
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
+  const { openUserProfile } = useClerk();
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
@@ -89,46 +44,13 @@ export default function AccountSettingsPage() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <KeyRound className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-base">Change Password</CardTitle>
+            <CardTitle className="text-base">Account Security</CardTitle>
           </div>
-          <CardDescription>Enter your current password and choose a new one.</CardDescription>
+          <CardDescription>Manage your password, email, and connected accounts.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="current-password">Current Password</Label>
-            <Input
-              id="current-password"
-              type="password"
-              placeholder="Enter current password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              className="bg-muted/50"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="new-password">New Password</Label>
-            <Input
-              id="new-password"
-              type="password"
-              placeholder="Enter new password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              className="bg-muted/50"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="confirm-password">Confirm New Password</Label>
-            <Input
-              id="confirm-password"
-              type="password"
-              placeholder="Confirm new password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              className="bg-muted/50"
-            />
-          </div>
-          <Button onClick={handleChangePassword} disabled={saving || !currentPassword || !newPassword || !confirmPassword} className="w-full">
-            {saving ? "Updating..." : "Update Password"}
+        <CardContent>
+          <Button variant="outline" className="w-full" onClick={() => openUserProfile()}>
+            Manage Password & Security
           </Button>
         </CardContent>
       </Card>

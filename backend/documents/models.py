@@ -9,6 +9,7 @@ class User(AbstractUser):
     team = models.ForeignKey('Team', on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
     email = models.EmailField(unique=True, null=True, blank=True, default=None)
     credits = models.IntegerField(default=40)
+    clerk_id = models.CharField(max_length=100, unique=True, null=True, blank=True)
 
     class Meta:
         db_table = 'users'

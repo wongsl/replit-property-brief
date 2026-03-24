@@ -100,7 +100,7 @@ LOGGING = {
     'loggers': {
         'api': {
             'handlers': ['console'],
-            'level': 'INFO',
+            'level': 'DEBUG',
             'propagate': False,
         },
     },
@@ -114,6 +114,11 @@ EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@propertybrief.com')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5000')
+
+CLERK_JWKS_URL = os.environ.get(
+    'CLERK_JWKS_URL',
+    'https://inspired-sheepdog-86.clerk.accounts.dev/.well-known/jwks.json',
+)
 
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 SESSION_COOKIE_HTTPONLY = True

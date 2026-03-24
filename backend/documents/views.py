@@ -22,6 +22,7 @@ from .cache_utils import (
     invalidate_user, invalidate_teams, invalidate_all_for_user
 )
 from .permissions import IsAdmin, IsAdminOrTeamLeader
+from .auth_backend import verify_clerk_token
 
 User = get_user_model()
 
@@ -84,6 +85,51 @@ def logout(request):
         invalidate_user(request.user.id)
     request.session.flush()
     return Response({'message': 'Logged out'})
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def clerk_sync(request):
+    """Verify a Clerk JWT, then create/update the linked Django user and establish a session."""
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    if not auth_header.startswith('Bearer '):
+        return Response({'error': 'Authorization required'}, status=401)
+
+    token = auth_header[7:]
+    payload = verify_clerk_token(token)
+    if not payload:
+        return Response({'error': 'Invalid token'}, status=401)
+
+    clerk_id = payload.get('sub')
+    if not clerk_id:
+        return Response({'error': 'Invalid token payload'}, status=401)
+
+    email = (request.data.get('email') or '').strip().lower() or None
+    requested_username = (request.data.get('username') or '').strip()
+
+    try:
+        user = User.objects.select_related('team').get(clerk_id=clerk_id)
+        # Keep email in sync if it changed in Clerk
+        if email and user.email != email:
+            user.email = email
+            user.save(update_fields=['email'])
+    except User.DoesNotExist:
+        # Derive a unique username
+        base = requested_username or (email.split('@')[0] if email else clerk_id[:12])
+        username, counter = base, 1
+        while User.objects.filter(username=username).exists():
+            username = f'{base}{counter}'
+            counter += 1
+        user = User.objects.create(
+            clerk_id=clerk_id,
+            username=username,
+            email=email,
+            credits=40,
+        )
+
+    request.session['user_id'] = user.id
+    invalidate_user(user.id)
+    return Response(UserSerializer(user).data)
 
 
 @api_view(['GET'])

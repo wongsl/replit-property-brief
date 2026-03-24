@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
+import { useUser, useAuth as useClerkAuth } from "@clerk/clerk-react";
 import { useToast } from "@/hooks/use-toast";
 
 type UserRole = "admin" | "team_leader" | "user" | "viewer";
@@ -16,8 +17,6 @@ interface User {
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  login: (username: string, password: string) => Promise<boolean>;
-  register: (username: string, password: string, email: string, role: UserRole, teamId?: number) => Promise<boolean>;
   logout: () => void;
   refreshUser: () => Promise<void>;
   rateLimitRemaining: number;
@@ -28,73 +27,59 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const MAX_REQUESTS = 5;
 
-async function apiFetch(url: string, options: RequestInit = {}) {
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-      ...options.headers,
-    },
-    credentials: 'include',
-  });
-  return res;
-}
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const { user: clerkUser, isLoaded: clerkLoaded } = useUser();
+  const { getToken, signOut } = useClerkAuth();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [rateLimitRemaining, setRateLimitRemaining] = useState(MAX_REQUESTS);
   const { toast } = useToast();
 
   useEffect(() => {
-    apiFetch('/api/auth/me/').then(async (res) => {
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data);
-      }
+    if (!clerkLoaded) return;
+
+    if (!clerkUser) {
+      setUser(null);
       setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
-
-  const login = async (username: string, password: string): Promise<boolean> => {
-    const res = await apiFetch('/api/auth/login/', {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setUser(data);
-      toast({ title: "Welcome back!", description: `Logged in as ${data.username} (${data.role})` });
-      return true;
-    } else {
-      const err = await res.json();
-      toast({ title: "Login failed", description: err.error || "Invalid credentials", variant: "destructive" });
-      return false;
+      return;
     }
-  };
 
-  const register = async (username: string, password: string, email: string, role: UserRole, teamId?: number): Promise<boolean> => {
-    const res = await apiFetch('/api/auth/register/', {
-      method: 'POST',
-      body: JSON.stringify({ username, password, email, role, team_id: teamId }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setUser(data);
-      toast({ title: "Account created!", description: `Welcome, ${data.username}` });
-      return true;
-    } else {
-      const err = await res.json();
-      toast({ title: "Registration failed", description: err.error || "Something went wrong", variant: "destructive" });
-      return false;
-    }
-  };
+    // Get a Clerk JWT and sync with the Django backend to establish a session.
+    (async () => {
+      setLoading(true);
+      try {
+        const token = await getToken();
+        const res = await fetch('/api/auth/sync/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            clerk_id: clerkUser.id,
+            email: clerkUser.primaryEmailAddress?.emailAddress,
+            username: clerkUser.username || clerkUser.primaryEmailAddress?.emailAddress?.split('@')[0],
+          }),
+        });
+        if (res.ok) setUser(await res.json());
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [clerkUser?.id, clerkLoaded]);
 
   const logout = () => {
-    apiFetch('/api/auth/logout/', { method: 'POST' });
+    signOut();
+    fetch('/api/auth/logout/', { method: 'POST', credentials: 'include' });
     setUser(null);
     setRateLimitRemaining(MAX_REQUESTS);
     toast({ title: "Logged out", description: "See you next time." });
+  };
+
+  const refreshUser = async () => {
+    const res = await fetch('/api/auth/me/', { credentials: 'include' });
+    if (res.ok) setUser(await res.json());
   };
 
   const decrementRateLimit = (): boolean => {
@@ -111,16 +96,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     toast({ title: "Rate limit reset", description: "You can now perform actions again." });
   };
 
-  const refreshUser = async () => {
-    const res = await apiFetch('/api/auth/me/');
-    if (res.ok) {
-      const data = await res.json();
-      setUser(data);
-    }
-  };
-
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser, rateLimitRemaining, decrementRateLimit, resetRateLimit }}>
+    <AuthContext.Provider value={{ user, loading, logout, refreshUser, rateLimitRemaining, decrementRateLimit, resetRateLimit }}>
       {children}
     </AuthContext.Provider>
   );
