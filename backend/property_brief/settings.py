@@ -9,6 +9,9 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-produ
 DEBUG = os.environ.get('DJANGO_DEBUG', 'True') == 'True'
 ALLOWED_HOSTS = ['*']
 
+# Clerk JWT verification
+CLERK_JWKS_URL = os.environ.get('CLERK_JWKS_URL', 'https://api.clerk.dev/.well-known/jwks.json')
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',

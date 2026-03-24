@@ -18,9 +18,9 @@ export default function AuthPage() {
 
         <div className="flex justify-center">
           {mode === "sign-in" ? (
-            <SignIn routing="hash" afterSignInUrl="/dashboard" />
+            <SignIn routing="hash" fallbackRedirectUrl="/dashboard" />
           ) : (
-            <SignUp routing="hash" afterSignUpUrl="/dashboard" />
+            <SignUp routing="hash" fallbackRedirectUrl="/dashboard" />
           )}
         </div>
 
