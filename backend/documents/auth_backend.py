@@ -1,12 +1,15 @@
+import json as _json
+import logging as _logging
+
 import jwt
 import requests
 from jwt.algorithms import RSAAlgorithm
-from django.conf import settings
 from django.core.cache import cache
 from rest_framework.authentication import BaseAuthentication
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
+_logger = _logging.getLogger("api")
 
 
 class SessionAuthentication(BaseAuthentication):
@@ -21,15 +24,23 @@ class SessionAuthentication(BaseAuthentication):
             return None
 
 
-import logging as _logging
-_logger = _logging.getLogger("api")
+def _jwks_url_from_token(token: str) -> str | None:
+    """Extract the JWKS URL from the unverified 'iss' claim in the JWT payload."""
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        iss = unverified.get('iss', '').rstrip('/')
+        if iss:
+            return f"{iss}/.well-known/jwks.json"
+    except Exception as e:
+        _logger.warning("clerk_iss_extract_error", extra={"error": str(e)})
+    return None
+
 
 def verify_clerk_token(token: str) -> dict | None:
     """Verify a Clerk-issued JWT and return the decoded payload, or None if invalid."""
     try:
         header = jwt.get_unverified_header(token)
         kid = header.get('kid')
-        _logger.debug("clerk_token_header", extra={"kid": kid, "header": header})
     except Exception as e:
         _logger.warning("clerk_token_header_error", extra={"error": str(e)})
         return None
@@ -40,14 +51,17 @@ def verify_clerk_token(token: str) -> dict | None:
     if cached_jwk:
         public_key = RSAAlgorithm.from_jwk(cached_jwk)
     else:
+        jwks_url = _jwks_url_from_token(token)
+        if not jwks_url:
+            _logger.warning("clerk_jwks_url_missing")
+            return None
+
         public_key = None
         try:
-            jwks = requests.get(settings.CLERK_JWKS_URL, timeout=5).json()
-            available_kids = [k.get('kid') for k in jwks.get('keys', [])]
-            _logger.debug("clerk_jwks_fetched", extra={"jwks_url": settings.CLERK_JWKS_URL, "available_kids": available_kids, "looking_for": kid})
+            jwks = requests.get(jwks_url, timeout=5).json()
+            _logger.debug("clerk_jwks_fetched", extra={"jwks_url": jwks_url, "kid": kid})
             for key_data in jwks.get('keys', []):
                 if key_data.get('kid') == kid:
-                    import json as _json
                     cache.set(cache_key, _json.dumps(key_data), 3600)
                     public_key = RSAAlgorithm.from_jwk(key_data)
                     break
