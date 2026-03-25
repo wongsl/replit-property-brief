@@ -451,17 +451,27 @@ function InspectionSection({ title, data }: { title: string; data: any }) {
 
   if (title === "Additional Notes" && typeof data === 'object') {
     return (
-      <div className="space-y-2">
+      <div className="space-y-2 rounded-lg border p-3 bg-card">
         <h4 className="text-sm font-bold text-primary">{title}</h4>
         {Object.entries(data).map(([area, findings]: [string, any]) => (
-          <div key={area} className="ml-3 space-y-1">
+          <div key={area} className="space-y-1">
             <p className="text-xs font-semibold text-foreground">{area}</p>
             {typeof findings === 'string' ? (
               <p className="text-xs text-muted-foreground ml-2">{findings}</p>
             ) : typeof findings === 'object' && findings !== null ? (
               <div className="ml-2 space-y-0.5">
                 {Object.entries(findings).map(([k, v]: [string, any]) => (
-                  <p key={k} className="text-xs text-muted-foreground"><span className="font-medium">{k}:</span> {typeof v === 'string' ? v : JSON.stringify(v)}</p>
+                  <div key={k}>
+                    {Array.isArray(v) ? (
+                      <ul className="list-disc ml-4 space-y-0.5">
+                        {v.map((item: string, i: number) => (
+                          <li key={i} className="text-xs text-muted-foreground">{item}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-muted-foreground"><span className="font-medium">{k}:</span> {typeof v === 'string' ? v : JSON.stringify(v)}</p>
+                    )}
+                  </div>
                 ))}
               </div>
             ) : null}
