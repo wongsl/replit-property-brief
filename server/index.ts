@@ -63,7 +63,7 @@ app.use(async (req, _res, next) => {
   const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/) || req.path === '/api/screen-files/';
   if (isExpressHandled && req.headers.cookie) {
     try {
-      const meRes = await fetch("http://127.0.0.1:8000/api/me/", {
+      const meRes = await fetch("http://127.0.0.1:8000/api/auth/me/", {
         headers: { Cookie: req.headers.cookie },
       });
       if (meRes.ok) {
