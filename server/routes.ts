@@ -12,7 +12,7 @@ function startDjango(): Promise<void> {
   return new Promise((resolve) => {
     // Use the Python from the venv if available, otherwise fallback to system python
     const venvPython = path.join(process.cwd(), ".venv", "bin", "python");
-    const pythonPath = existsSync(venvPython) ? venvPython : (process.env.PYTHON_PATH || "python3");
+    const pythonPath = existsSync(venvPython) ? venvPython : (process.env.PYTHON_PATH || "python3.11");
     const host = process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1";
     const django = spawn(pythonPath, ["manage.py", "runserver", `${host}:8000`], {
       cwd: `${process.cwd()}/backend`,

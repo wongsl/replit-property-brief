@@ -1,30 +1,39 @@
 #!/usr/bin/env python3
 """
-Robust migration runner that handles schema/migration-state mismatches.
-Fakes Django built-in app migrations if the schema is already ahead,
-then runs all app-level migrations normally.
-"""
-import os
-import sys
-import subprocess
+Robust migration runner for production.
 
-def run_cmd(cmd, check=False):
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if r.stdout:
-        print(r.stdout, end='')
-    if r.stderr:
-        print(r.stderr, end='', file=sys.stderr)
+Production DB state (verified by direct query):
+- django_migrations has: contenttypes 0001-0002, auth 0001-0012,
+  admin 0001-0003, sessions 0001, documents 0001
+- documents 0002-0005 columns EXIST in the schema but are NOT tracked
+  -> fake them so Django doesn't try to re-apply them
+- documents 0006-0008 are genuinely missing -> run for real
+"""
+import subprocess
+import sys
+import os
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+
+def run(cmd, check=True):
+    print(f">>> {cmd}", flush=True)
+    r = subprocess.run(cmd, shell=True, text=True)
+    if check and r.returncode != 0:
+        print(f"FAILED (exit {r.returncode})", file=sys.stderr, flush=True)
+        sys.exit(r.returncode)
     return r.returncode == 0
 
-# Fake core Django app migrations that may already be applied to the schema
-# (these have no custom data — safe to fake)
-for app in ['contenttypes', 'auth', 'admin', 'sessions']:
-    run_cmd(f'python3.11 manage.py migrate {app} --fake 2>/dev/null')
 
-# Now run all remaining migrations for our app (documents, etc.)
-ok = run_cmd('python3.11 manage.py migrate')
-if not ok:
-    print("ERROR: migrations failed", file=sys.stderr)
-    sys.exit(1)
+# Mark documents 0002-0005 as applied without re-running them.
+# Their schema changes (email_draft, share_token, password_reset_tokens
+# table, clerk_id) already exist in the production database.
+run("python3.11 manage.py migrate documents 0005 --fake", check=False)
 
-print("Migrations complete.")
+# Run all remaining pending migrations normally:
+#   documents 0006 - folders favorited_by M2M table
+#   documents 0007 - folders.is_archived column
+#   documents 0008 - combined_analyses favorited_by M2M table
+run("python3.11 manage.py migrate")
+
+print("All migrations complete.", flush=True)
