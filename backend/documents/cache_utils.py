@@ -5,10 +5,11 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL = 300
 
-def _docs_key(user_id, scope, team_id=None):
+def _docs_key(user_id, scope, team_id=None, days=None):
+    days_suffix = f':days{days}' if days else ''
     if scope == 'team' and team_id:
-        return f'docs:team:{team_id}'
-    return f'docs:{user_id}:mine'
+        return f'docs:team:{team_id}{days_suffix}'
+    return f'docs:{user_id}:mine{days_suffix}'
 
 def _folders_key(user_id, archived=False):
     return f'folders:{user_id}:{"archived" if archived else "active"}'
@@ -40,9 +41,12 @@ def set_cached(key, data, ttl=CACHE_TTL):
 
 
 def invalidate_docs(user_id, team_id=None):
+    # Clear both the windowed (days=7) and any full cache entries
     cache.delete(_docs_key(user_id, 'mine'))
+    cache.delete(_docs_key(user_id, 'mine', days=7))
     if team_id:
         cache.delete(_docs_key(user_id, 'team', team_id))
+        cache.delete(_docs_key(user_id, 'team', team_id, days=7))
 
 
 def invalidate_folders(user_id):

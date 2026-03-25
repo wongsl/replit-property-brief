@@ -378,12 +378,20 @@ class DocumentViewSet(viewsets.ModelViewSet):
             qs = qs.filter(team=self.request.user.team, is_private=False)
         else:
             qs = qs.filter(owner=self.request.user)
+        days = self.request.query_params.get('days')
+        if days:
+            try:
+                cutoff = timezone.now() - timedelta(days=int(days))
+                qs = qs.filter(created_at__gte=cutoff)
+            except (ValueError, TypeError):
+                pass
         return qs
 
     def list(self, request, *args, **kwargs):
         scope = request.query_params.get('scope', 'mine')
         team_id = getattr(request.user, 'team_id', None)
-        key = _docs_key(request.user.id, scope, team_id)
+        days = request.query_params.get('days')
+        key = _docs_key(request.user.id, scope, team_id, days=days)
         cached = get_cached(key)
         if cached:
             return Response(cached)

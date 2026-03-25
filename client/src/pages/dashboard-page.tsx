@@ -198,7 +198,7 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
   const loadData = async () => {
     const scope = activeTab === "team-files" ? "team" : "mine";
     const [docsRes, foldersRes, archivedRes, sharedRes] = await Promise.all([
-      apiFetch(`/api/documents/?scope=${scope}`),
+      apiFetch(`/api/documents/?scope=${scope}&days=7`),
       apiFetch('/api/folders/'),
       apiFetch('/api/folders/?archived=true'),
       apiFetch('/api/documents/shared_with_me/'),
@@ -934,13 +934,11 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
     return doc[key] ?? '';
   };
 
-  const sevenDaysAgo = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 7); return d; }, []);
-
   const filteredDocs = useMemo(() => {
     const allArchivedIds = new Set(getAllFolderIds(archivedFolders));
     let docs = documents.filter(d => {
       if (d.folder && allArchivedIds.has(d.folder)) return false;
-      return new Date(d.created_at) >= sevenDaysAgo;
+      return true;
     });
     if (showFavoritesOnly) {
       docs = docs.filter(d => d.is_favorited);
@@ -972,17 +970,17 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
       );
     }
     return docs;
-  }, [documents, archivedFolders, searchQuery, sortConfig, showFavoritesOnly, sevenDaysAgo]);
+  }, [documents, archivedFolders, searchQuery, sortConfig, showFavoritesOnly]);
 
   const filteredFolders = useMemo(() => {
-    let result = folders.filter(f => new Date(f.created_at) >= sevenDaysAgo);
+    let result = [...folders];
     if (showFavoritesOnly) {
       const isFavoritedInTree = (folder: any): boolean =>
         folder.is_favorited || (folder.children || []).some(isFavoritedInTree);
       result = result.filter(isFavoritedInTree);
     }
-    return [...result].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  }, [folders, showFavoritesOnly, sevenDaysAgo]);
+    return result.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }, [folders, showFavoritesOnly]);
 
   const docsByFolder = useMemo(() => {
     const map: Record<number | string, any[]> = { unassigned: [] };

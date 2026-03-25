@@ -39,6 +39,9 @@ class Folder(models.Model):
     class Meta:
         db_table = 'folders'
         ordering = ['position', 'name']
+        indexes = [
+            models.Index(fields=['owner', 'is_archived'], name='folder_owner_archived_idx'),
+        ]
 
     def __str__(self):
         return self.name
@@ -91,6 +94,10 @@ class Document(models.Model):
     class Meta:
         db_table = 'documents'
         ordering = ['position', '-created_at']
+        indexes = [
+            models.Index(fields=['owner', '-created_at'], name='doc_owner_created_idx'),
+            models.Index(fields=['team', 'is_private', '-created_at'], name='doc_team_created_idx'),
+        ]
 
     def __str__(self):
         return self.name
@@ -107,6 +114,10 @@ class TeamJoinRequest(models.Model):
     class Meta:
         db_table = 'team_join_requests'
         unique_together = [('user', 'team')]
+        indexes = [
+            models.Index(fields=['user', 'status'], name='joinreq_user_status_idx'),
+            models.Index(fields=['team', 'status'], name='joinreq_team_status_idx'),
+        ]
 
     def __str__(self):
         return f'{self.user.username} → {self.team.name} ({self.status})'
@@ -161,6 +172,9 @@ class CreditTransaction(models.Model):
     class Meta:
         db_table = 'credit_transactions'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', '-created_at'], name='credittx_user_created_idx'),
+        ]
 
 
 class CreditRequest(models.Model):
@@ -175,6 +189,9 @@ class CreditRequest(models.Model):
     class Meta:
         db_table = 'credit_requests'
         ordering = ['-requested_at']
+        indexes = [
+            models.Index(fields=['user', 'status'], name='creditreq_user_status_idx'),
+        ]
 
 
 class PasswordResetToken(models.Model):
