@@ -10,8 +10,8 @@ def _docs_key(user_id, scope, team_id=None):
         return f'docs:team:{team_id}'
     return f'docs:{user_id}:mine'
 
-def _folders_key(user_id):
-    return f'folders:{user_id}'
+def _folders_key(user_id, archived=False):
+    return f'folders:{user_id}:{"archived" if archived else "active"}'
 
 def _teams_key():
     return 'teams:all'
@@ -21,6 +21,9 @@ def _user_key(user_id):
 
 def _admin_users_key():
     return 'admin:users'
+
+def _shared_key(user_id):
+    return f'shared:{user_id}'
 
 
 def get_cached(key):
@@ -43,7 +46,8 @@ def invalidate_docs(user_id, team_id=None):
 
 
 def invalidate_folders(user_id):
-    cache.delete(_folders_key(user_id))
+    cache.delete(_folders_key(user_id, archived=False))
+    cache.delete(_folders_key(user_id, archived=True))
 
 
 def invalidate_user(user_id):

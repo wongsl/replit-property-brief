@@ -283,7 +283,8 @@ class FolderViewSet(viewsets.ModelViewSet):
         return qs
 
     def list(self, request, *args, **kwargs):
-        key = _folders_key(request.user.id)
+        is_archived = request.query_params.get('archived') == 'true'
+        key = _folders_key(request.user.id, archived=is_archived)
         cached = get_cached(key)
         if cached:
             return Response(cached)
@@ -556,6 +557,54 @@ class DocumentViewSet(viewsets.ModelViewSet):
             doc.share_token = uuid.uuid4()
             doc.save(update_fields=['share_token'])
         return Response({'share_token': str(doc.share_token)})
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdmin])
+    def share_with_user(self, request, pk=None):
+        doc = self.get_object()
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({'error': 'user_id required'}, status=400)
+        try:
+            target_user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=404)
+        DocumentPermission.objects.get_or_create(
+            document=doc,
+            user=target_user,
+            defaults={'permission': 'view'}
+        )
+        from .cache_utils import _shared_key
+        from django.core.cache import cache
+        cache.delete(_shared_key(target_user.id))
+        return Response({'shared': True, 'username': target_user.username})
+
+    @action(detail=True, methods=['delete'], permission_classes=[IsAdmin], url_path='share_with_user/(?P<user_id>[^/.]+)')
+    def unshare_with_user(self, request, pk=None, user_id=None):
+        doc = self.get_object()
+        try:
+            target_user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=404)
+        DocumentPermission.objects.filter(document=doc, user=target_user).delete()
+        from .cache_utils import _shared_key
+        from django.core.cache import cache
+        cache.delete(_shared_key(target_user.id))
+        return Response({'unshared': True})
+
+    @action(detail=False, methods=['get'])
+    def shared_with_me(self, request):
+        from .cache_utils import _shared_key
+        key = _shared_key(request.user.id)
+        cached = get_cached(key)
+        if cached:
+            return Response(cached)
+        doc_ids = DocumentPermission.objects.filter(
+            user=request.user
+        ).values_list('document_id', flat=True)
+        docs = Document.objects.select_related('owner', 'folder').prefetch_related('tags').filter(id__in=doc_ids)
+        data = DocumentSerializer(docs, many=True, context={'request': request}).data
+        set_cached(key, data)
+        return Response(data)
 
 
 @api_view(['GET'])

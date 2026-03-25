@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Star,
   Settings,
+  Archive,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -89,6 +90,12 @@ function AppSidebar() {
       title: "File Explorer",
       url: "/explorer",
       icon: FileText,
+      roles: ["admin", "team_leader", "user"],
+    },
+    {
+      title: "Archive",
+      url: "/archive",
+      icon: Archive,
       roles: ["admin", "team_leader", "user"],
     },
     {

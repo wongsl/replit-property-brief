@@ -13,7 +13,7 @@ import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
   ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, Minus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
-  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail, Share2, Pencil, Archive, ArchiveRestore
+  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail, Share2, Pencil, Archive, ArchiveRestore, UserPlus
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -119,14 +119,14 @@ function updateCombinedFavoriteInChildren(children: any[], recordId: number, is_
   }));
 }
 
-export default function DashboardPage({ initialFavoritesOnly = false }: { initialFavoritesOnly?: boolean } = {}) {
+export default function DashboardPage({ initialFavoritesOnly = false, initialActiveTab }: { initialFavoritesOnly?: boolean; initialActiveTab?: string } = {}) {
   const { user, refreshUser, decrementRateLimit, rateLimitRemaining, resetRateLimit } = useAuth();
   const { toast } = useToast();
   const [documents, setDocuments] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
   const [archivedFolders, setArchivedFolders] = useState<any[]>([]);
   const [teams, setTeams] = useState<{id: number, name: string}[]>([]);
-  const [activeTab, setActiveTab] = useState("my-files");
+  const [activeTab, setActiveTab] = useState(initialActiveTab ?? "my-files");
   const [isUploading, setIsUploading] = useState(false);
   const [isScreening, setIsScreening] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -161,6 +161,10 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
   const [expandedCombinedAnalyses, setExpandedCombinedAnalyses] = useState<Set<number>>(new Set());
   const [isDraftingEmail, setIsDraftingEmail] = useState(false);
   const [draftEmailDocId, setDraftEmailDocId] = useState<number | null>(null);
+  const [sharedDocs, setSharedDocs] = useState<any[]>([]);
+  const [shareWithUserDocId, setShareWithUserDocId] = useState<number | null>(null);
+  const [allUsers, setAllUsers] = useState<{id: number, username: string}[]>([]);
+  const [shareUserSearch, setShareUserSearch] = useState("");
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -193,14 +197,16 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
 
   const loadData = async () => {
     const scope = activeTab === "team-files" ? "team" : "mine";
-    const [docsRes, foldersRes, archivedRes] = await Promise.all([
+    const [docsRes, foldersRes, archivedRes, sharedRes] = await Promise.all([
       apiFetch(`/api/documents/?scope=${scope}`),
       apiFetch('/api/folders/'),
       apiFetch('/api/folders/?archived=true'),
+      apiFetch('/api/documents/shared_with_me/'),
     ]);
     if (docsRes.ok) setDocuments(await docsRes.json());
     if (foldersRes.ok) setFolders(await foldersRes.json());
     if (archivedRes.ok) setArchivedFolders(await archivedRes.json());
+    if (sharedRes.ok) setSharedDocs(await sharedRes.json());
   };
 
   useEffect(() => { loadData(); }, [activeTab]);
@@ -758,6 +764,17 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     }
   };
 
+  const openShareWithUser = async (docId: number) => {
+    setShareWithUserDocId(docId);
+    if (allUsers.length === 0) {
+      const res = await apiFetch('/api/admin/users/');
+      if (res.ok) {
+        const data = await res.json();
+        setAllUsers(data.map((u: any) => ({ id: u.id, username: u.username })));
+      }
+    }
+  };
+
   const handleSort = (key: string) => {
     setSortConfig(prev => ({ key, direction: prev?.key === key && prev.direction === 'asc' ? 'desc' : 'asc' }));
   };
@@ -913,7 +930,11 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
   const sevenDaysAgo = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 7); return d; }, []);
 
   const filteredDocs = useMemo(() => {
-    let docs = documents.filter(d => new Date(d.created_at) >= sevenDaysAgo);
+    const allArchivedIds = new Set(getAllFolderIds(archivedFolders));
+    let docs = documents.filter(d => {
+      if (d.folder && allArchivedIds.has(d.folder)) return false;
+      return new Date(d.created_at) >= sevenDaysAgo;
+    });
     if (showFavoritesOnly) {
       docs = docs.filter(d => d.is_favorited);
     }
@@ -944,7 +965,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
       );
     }
     return docs;
-  }, [documents, searchQuery, sortConfig, showFavoritesOnly, sevenDaysAgo]);
+  }, [documents, archivedFolders, searchQuery, sortConfig, showFavoritesOnly, sevenDaysAgo]);
 
   const filteredFolders = useMemo(() => {
     let result = folders.filter(f => new Date(f.created_at) >= sevenDaysAgo);
@@ -1025,7 +1046,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     <div className="space-y-8">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-3xl font-display font-bold tracking-tight">{initialFavoritesOnly ? "Favorites" : "Documents"}</h2>
+          <h2 className="text-3xl font-display font-bold tracking-tight">{initialFavoritesOnly ? "Favorites" : activeTab === "archive" ? "Archive" : activeTab === "shared-with-me" ? "Shared with me" : "Dashboard"}</h2>
           <p className="text-muted-foreground">
             {initialFavoritesOnly ? "Your starred documents." : "Manage, group, and analyze your files."}
             {!initialFavoritesOnly && <span className="ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium text-muted-foreground">Last 7 days</span>}
@@ -1066,6 +1087,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
               <TabsTrigger value="my-files" className="gap-2"><FileText className="h-4 w-4" />My Files</TabsTrigger>
               <TabsTrigger value="team-files" className="gap-2"><Users className="h-4 w-4" />Team Files</TabsTrigger>
               <TabsTrigger value="archive" className="gap-2"><Archive className="h-4 w-4" />Archive</TabsTrigger>
+              <TabsTrigger value="shared-with-me" className="gap-2"><UserPlus className="h-4 w-4" />Shared with me</TabsTrigger>
             </TabsList>
           </Tabs>
           <Button variant={groupBy ? "secondary" : "outline"} size="sm" className="gap-2" onClick={() => setGroupBy(!groupBy)}>
@@ -1083,7 +1105,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
             <PopoverContent className="w-72 p-4 space-y-3" align="end">
               <p className="text-sm font-medium">Create a new client folder</p>
               <Input
-                placeholder="Folder name..."
+                placeholder="e.g. Client Name or Property Address"
                 value={newGroupName}
                 onChange={(e) => setNewGroupName(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleCreateGroup()}
@@ -1141,20 +1163,20 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
       )}
 
       {activeTab === 'archive' && (
-        <Card className="overflow-hidden">
+        <Card className="overflow-hidden grayscale opacity-75">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[40px]"></TableHead>
                 <TableHead>Name</TableHead>
-                <TableHead>Tags</TableHead>
-                <TableHead>Owner</TableHead>
-                <TableHead>Score</TableHead>
+                <TableHead>Actions</TableHead>
                 <TableHead>City</TableHead>
                 <TableHead>County</TableHead>
-                <TableHead>Folder</TableHead>
+                <TableHead>Owner</TableHead>
                 <TableHead>Date</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead>Folder</TableHead>
+                <TableHead>Tags</TableHead>
+                <TableHead>Score</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1196,7 +1218,57 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
           </Table>
         </Card>
       )}
-      {activeTab !== 'archive' && (
+      {activeTab === 'shared-with-me' && (
+        <Card className="overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Shared by</TableHead>
+                <TableHead>City</TableHead>
+                <TableHead>County</TableHead>
+                <TableHead>Date</TableHead>
+                <TableHead>Score</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sharedDocs.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center py-12 text-muted-foreground">
+                    <UserPlus className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                    <p className="text-sm">No documents have been shared with you yet.</p>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                sharedDocs.map((doc: any) => (
+                  <TableRow key={doc.id}>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-sm font-medium">{doc.name}</span>
+                        {doc.ai_analysis && (
+                          <span className="text-[10px] text-muted-foreground">
+                            {[doc.ai_analysis.city, doc.ai_analysis.county].filter(Boolean).join(' · ')}
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{doc.owner_name || '--'}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{doc.ai_analysis?.city || '--'}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{doc.ai_analysis?.county || '--'}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                      {doc.created_at ? new Date(doc.created_at).toLocaleDateString() : '--'}
+                    </TableCell>
+                    <TableCell>
+                      {doc.ai_score ? <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px]">{doc.ai_score}%</Badge> : '--'}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+      {activeTab !== 'archive' && activeTab !== 'shared-with-me' && (
       <DndContext sensors={sensors} collisionDetection={customCollisionDetection} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={() => { setActiveDragId(null); setDragOverFolderId(null); }}>
         <Card className="overflow-hidden">
           <Table>
@@ -1204,22 +1276,20 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
               <TableRow>
                 <TableHead className="w-[40px]"></TableHead>
                 <TableHead className="cursor-pointer" onClick={() => handleSort('name')}>Name <ArrowUpDown className="inline h-3 w-3" /></TableHead>
-                <TableHead>Tags</TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('owner_name')}>Owner <ArrowUpDown className="inline h-3 w-3" /></TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('ai_score')}>Score <ArrowUpDown className="inline h-3 w-3" /></TableHead>
+                <TableHead>Actions</TableHead>
                 <TableHead className="cursor-pointer" onClick={() => handleSort('ai_analysis.city')}>
-                  City {sortConfig?.key === 'ai_analysis.city' && <ArrowUpDown className="inline h-3 w-3 text-primary" />}
-                  {sortConfig?.key !== 'ai_analysis.city' && <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
+                  City {sortConfig?.key === 'ai_analysis.city' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
                 </TableHead>
                 <TableHead className="cursor-pointer" onClick={() => handleSort('ai_analysis.county')}>
-                  County {sortConfig?.key === 'ai_analysis.county' && <ArrowUpDown className="inline h-3 w-3 text-primary" />}
-                  {sortConfig?.key !== 'ai_analysis.county' && <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
+                  County {sortConfig?.key === 'ai_analysis.county' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
                 </TableHead>
-                <TableHead>Folder</TableHead>
+                <TableHead className="cursor-pointer" onClick={() => handleSort('owner_name')}>Owner <ArrowUpDown className="inline h-3 w-3" /></TableHead>
                 <TableHead className="cursor-pointer" onClick={() => handleSort('created_at')}>
                   Date {sortConfig?.key === 'created_at' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
                 </TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead>Folder</TableHead>
+                <TableHead>Tags</TableHead>
+                <TableHead className="cursor-pointer" onClick={() => handleSort('ai_score')}>Score <ArrowUpDown className="inline h-3 w-3" /></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1313,6 +1383,50 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
         </DragOverlay>
       </DndContext>
       )}
+
+      <Dialog open={shareWithUserDocId !== null} onOpenChange={(open) => { if (!open) { setShareWithUserDocId(null); setShareUserSearch(""); } }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Share with user</DialogTitle>
+            <DialogDescription>Select a user to share this document's analysis with.</DialogDescription>
+          </DialogHeader>
+          <Input
+            placeholder="Search users..."
+            value={shareUserSearch}
+            onChange={(e) => setShareUserSearch(e.target.value)}
+            className="h-8 text-xs"
+          />
+          <div className="max-h-60 overflow-y-auto space-y-1 mt-1">
+            {allUsers
+              .filter(u => u.username.toLowerCase().includes(shareUserSearch.toLowerCase()))
+              .map(u => (
+                <button
+                  key={u.id}
+                  className="w-full text-left px-3 py-2 text-sm rounded-md hover:bg-muted transition-colors"
+                  onClick={async () => {
+                    const res = await apiFetch(`/api/documents/${shareWithUserDocId}/share_with_user/`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ user_id: u.id }),
+                    });
+                    if (res.ok) {
+                      toast({ title: `Shared with ${u.username}` });
+                      setShareWithUserDocId(null);
+                      setShareUserSearch("");
+                    } else {
+                      toast({ title: "Failed to share", variant: "destructive" });
+                    }
+                  }}
+                >
+                  {u.username}
+                </button>
+              ))}
+            {allUsers.filter(u => u.username.toLowerCase().includes(shareUserSearch.toLowerCase())).length === 0 && (
+              <p className="text-xs text-muted-foreground px-3 py-2">No users found.</p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showCreditsDialog} onOpenChange={setShowCreditsDialog}>
         <DialogContent className="sm:max-w-sm">
@@ -1435,7 +1549,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
                 return (
                   <div className="space-y-1.5">
                     <Input
-                      placeholder="New folder name..."
+                      placeholder="e.g. Client Name or Property Address"
                       value={uploadDestNewName}
                       onChange={e => setUploadDestNewName(e.target.value)}
                       className="h-8 text-xs"
@@ -1635,7 +1749,7 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
           {isAddingSub && (
             <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: depth * 24 + 40 }}>
               <Input
-                placeholder={depth === 0 ? "Property address..." : "Subfolder name..."}
+                placeholder="e.g. Client Name or Property Address"
                 value={subfolderName}
                 onChange={(e) => setSubfolderName(e.target.value)}
                 className="h-7 w-48 text-xs"
@@ -1853,47 +1967,7 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
           </div>
         </TableCell>
         <TableCell>
-          <div className="flex flex-wrap gap-1 items-center">
-            {(file.tags || []).map((t: any) => (
-              <Badge key={t.id || t.name} variant="secondary" className="text-[10px] gap-1 px-1.5 h-5">
-                {t.name}<X className="h-2 w-2 cursor-pointer" onClick={() => handleRemoveTag(file.id, t.name)} />
-              </Badge>
-            ))}
-            <div className="flex items-center gap-1">
-              <Input placeholder="Tag..." value={newTag} onChange={(e) => setNewTag(e.target.value)} className="h-5 w-16 text-[10px] px-1"
-                onKeyDown={(e) => { if (e.key === 'Enter') { handleAddTag(file.id, newTag); setNewTag(""); } }} />
-              <Tag className="h-3 w-3 text-muted-foreground" />
-            </div>
-          </div>
-        </TableCell>
-        <TableCell className="text-xs text-muted-foreground">{file.owner_name === user?.username ? "You" : file.owner_name}</TableCell>
-        <TableCell>
-          {file.ai_score ? <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px]">{file.ai_score}%</Badge> : "--"}
-        </TableCell>
-        <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.city || "--"}</TableCell>
-        <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.county || "--"}</TableCell>
-        <TableCell>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-6 text-xs">{file.folder_name || "None"}</Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-              <DropdownMenuLabel>Move to folder</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleMoveToFolder(file.id, null)}>None</DropdownMenuItem>
-              {flatFolders?.map((f: any) => (
-                <DropdownMenuItem key={f.id} onClick={() => handleMoveToFolder(file.id, f.id)}>
-                  <span style={{ paddingLeft: f.depth * 12 }}>{f.depth > 0 ? "└ " : ""}{f.name}</span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </TableCell>
-        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-          {file.created_at ? new Date(file.created_at).toLocaleDateString() : '--'}
-        </TableCell>
-        <TableCell className="text-right">
-          <div className="flex items-center justify-end gap-1">
+          <div className="flex items-center gap-1">
             <Button variant="ghost" size="icon" className={`h-8 w-8 ${isNotesExpanded ? 'text-yellow-500' : ''}`} onClick={() => toggleNotesExpanded(file.id)} title="Notes" data-testid={`button-notes-${file.id}`}>
               <StickyNote className={`h-4 w-4 ${isNotesExpanded || file.notes ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground'}`} />
             </Button>
@@ -1936,6 +2010,14 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
                     </DropdownMenuSub>
                   );
                 })()}
+                {user?.role === 'admin' && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => openShareWithUser(file.id)}>
+                      <UserPlus className="mr-2 h-4 w-4" />Share with user
+                    </DropdownMenuItem>
+                  </>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive" onClick={async () => {
                   await apiFetch(`/api/documents/${file.id}/`, { method: 'DELETE' });
@@ -1944,6 +2026,46 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
+        </TableCell>
+        <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.city || "--"}</TableCell>
+        <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.county || "--"}</TableCell>
+        <TableCell className="text-xs text-muted-foreground">{file.owner_name === user?.username ? "You" : file.owner_name}</TableCell>
+        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+          {file.created_at ? new Date(file.created_at).toLocaleDateString() : '--'}
+        </TableCell>
+        <TableCell>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 text-xs">{file.folder_name || "None"}</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuLabel>Move to folder</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => handleMoveToFolder(file.id, null)}>None</DropdownMenuItem>
+              {flatFolders?.map((f: any) => (
+                <DropdownMenuItem key={f.id} onClick={() => handleMoveToFolder(file.id, f.id)}>
+                  <span style={{ paddingLeft: f.depth * 12 }}>{f.depth > 0 ? "└ " : ""}{f.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </TableCell>
+        <TableCell>
+          <div className="flex flex-wrap gap-1 items-center">
+            {(file.tags || []).map((t: any) => (
+              <Badge key={t.id || t.name} variant="secondary" className="text-[10px] gap-1 px-1.5 h-5">
+                {t.name}<X className="h-2 w-2 cursor-pointer" onClick={() => handleRemoveTag(file.id, t.name)} />
+              </Badge>
+            ))}
+            <div className="flex items-center gap-1">
+              <Input placeholder="Tag..." value={newTag} onChange={(e) => setNewTag(e.target.value)} className="h-5 w-16 text-[10px] px-1"
+                onKeyDown={(e) => { if (e.key === 'Enter') { handleAddTag(file.id, newTag); setNewTag(""); } }} />
+              <Tag className="h-3 w-3 text-muted-foreground" />
+            </div>
+          </div>
+        </TableCell>
+        <TableCell>
+          {file.ai_score ? <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px]">{file.ai_score}%</Badge> : "--"}
         </TableCell>
       </TableRow>
       {isExpanded && hasAnalysis && (
@@ -2343,7 +2465,7 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, o
               <Input
                 value={newFolderName}
                 onChange={(e) => setNewFolderName(e.target.value)}
-                placeholder="Folder name"
+                placeholder="e.g. Client Name or Property Address"
                 className="h-7 text-xs flex-1"
                 onKeyDown={(e) => e.key === 'Enter' && handleAddToFolder()}
                 autoFocus

@@ -2,25 +2,24 @@
 Comprehensive tests for the documents Django app.
 Covers: auth views, folder views, document views, team views, admin views,
         credit views, combined analysis, permissions, cache utils,
-        middleware, exception handler, and the share feature.
+        middleware, exception handler, share feature, and share-with-user feature.
 """
 import uuid
-import time
 import logging
 from django.test import TestCase, RequestFactory
 from django.contrib.auth.hashers import make_password
 from django.core.cache import cache
 from rest_framework.test import APIClient
 from rest_framework.exceptions import AuthenticationFailed
-from rest_framework.response import Response
 
 from .models import (
     User, Team, Folder, Document, Tag, TeamJoinRequest,
     AdminRequest, CreditRequest, CreditTransaction, CombinedAnalysis,
+    DocumentPermission,
 )
 from .permissions import IsAdmin, IsAdminOrTeamLeader
 from .cache_utils import (
-    _docs_key, _folders_key, _teams_key, _user_key, _admin_users_key,
+    _docs_key, _folders_key, _teams_key, _user_key, _admin_users_key, _shared_key,
     get_cached, set_cached, invalidate_docs, invalidate_folders,
     invalidate_user, invalidate_teams, invalidate_all_for_user,
 )
@@ -82,8 +81,20 @@ class CacheKeyTests(TestCase):
     def test_docs_key_team_without_team_id_falls_back_to_mine(self):
         self.assertEqual(_docs_key(1, "team"), "docs:1:mine")
 
-    def test_folders_key(self):
-        self.assertEqual(_folders_key(7), "folders:7")
+    def test_folders_key_active(self):
+        self.assertEqual(_folders_key(7), "folders:7:active")
+
+    def test_folders_key_active_explicit(self):
+        self.assertEqual(_folders_key(7, archived=False), "folders:7:active")
+
+    def test_folders_key_archived(self):
+        self.assertEqual(_folders_key(7, archived=True), "folders:7:archived")
+
+    def test_folders_key_different_users(self):
+        self.assertNotEqual(_folders_key(1), _folders_key(2))
+
+    def test_folders_key_archived_differs_from_active(self):
+        self.assertNotEqual(_folders_key(1, archived=True), _folders_key(1, archived=False))
 
     def test_teams_key(self):
         self.assertEqual(_teams_key(), "teams:all")
@@ -93,6 +104,12 @@ class CacheKeyTests(TestCase):
 
     def test_admin_users_key(self):
         self.assertEqual(_admin_users_key(), "admin:users")
+
+    def test_shared_key(self):
+        self.assertEqual(_shared_key(99), "shared:99")
+
+    def test_shared_key_different_users(self):
+        self.assertNotEqual(_shared_key(1), _shared_key(2))
 
 
 class CacheGetSetTests(TestCase):
@@ -116,10 +133,22 @@ class CacheGetSetTests(TestCase):
         invalidate_docs(1, team_id=5)
         self.assertIsNone(get_cached(_docs_key(1, "team", 5)))
 
-    def test_invalidate_folders(self):
-        set_cached(_folders_key(1), [{"id": 1}])
+    def test_invalidate_folders_clears_active_key(self):
+        set_cached(_folders_key(1, archived=False), [{"id": 1}])
         invalidate_folders(1)
-        self.assertIsNone(get_cached(_folders_key(1)))
+        self.assertIsNone(get_cached(_folders_key(1, archived=False)))
+
+    def test_invalidate_folders_clears_archived_key(self):
+        set_cached(_folders_key(1, archived=True), [{"id": 10}])
+        invalidate_folders(1)
+        self.assertIsNone(get_cached(_folders_key(1, archived=True)))
+
+    def test_invalidate_folders_clears_both_keys(self):
+        set_cached(_folders_key(1, archived=False), [{"id": 1}])
+        set_cached(_folders_key(1, archived=True), [{"id": 2}])
+        invalidate_folders(1)
+        self.assertIsNone(get_cached(_folders_key(1, archived=False)))
+        self.assertIsNone(get_cached(_folders_key(1, archived=True)))
 
     def test_invalidate_user(self):
         set_cached(_user_key(1), {"id": 1})
@@ -169,6 +198,11 @@ class PermissionsTests(TestCase):
         perm = IsAdmin()
         self.assertFalse(perm.has_permission(self._make_request(user), None))
 
+    def test_is_admin_denies_viewer(self):
+        user = make_user("viewer1", role="viewer")
+        perm = IsAdmin()
+        self.assertFalse(perm.has_permission(self._make_request(user), None))
+
     def test_is_admin_or_team_leader_allows_admin(self):
         user = make_user("admin2", role="admin")
         perm = IsAdminOrTeamLeader()
@@ -180,7 +214,12 @@ class PermissionsTests(TestCase):
         self.assertTrue(perm.has_permission(self._make_request(user), None))
 
     def test_is_admin_or_team_leader_denies_viewer(self):
-        user = make_user("viewer1", role="viewer")
+        user = make_user("viewer2", role="viewer")
+        perm = IsAdminOrTeamLeader()
+        self.assertFalse(perm.has_permission(self._make_request(user), None))
+
+    def test_is_admin_or_team_leader_denies_regular_user(self):
+        user = make_user("user2", role="user")
         perm = IsAdminOrTeamLeader()
         self.assertFalse(perm.has_permission(self._make_request(user), None))
 
@@ -203,7 +242,7 @@ class MiddlewareTests(TestCase):
         response = mw(req)
         self.assertEqual(response.status_code, 200)
 
-    def test_middleware_logs_request(self):
+    def test_middleware_logs_request_id(self):
         from django.http import HttpResponse
 
         def get_response(request):
@@ -395,7 +434,6 @@ class MeTests(TestCase):
 
     def test_me_uses_cache_on_second_call(self):
         self.client.get("/api/auth/me/")
-        # Cache should be populated; second call returns same data
         res = self.client.get("/api/auth/me/")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["id"], self.user.id)
@@ -461,7 +499,6 @@ class FolderCRUDTests(TestCase):
     def test_cannot_set_circular_parent(self):
         parent = make_folder(self.user, "Parent")
         child = make_folder(self.user, "Child", parent=parent)
-        # Try to set parent's parent to child (circular)
         res = self.client.patch(f"/api/folders/{parent.id}/", {"parent": child.id}, format="json")
         self.assertIn(res.status_code, [400, 422])
 
@@ -474,6 +511,54 @@ class FolderCRUDTests(TestCase):
         f1.refresh_from_db()
         self.assertEqual(f2.position, 0)
         self.assertEqual(f1.position, 1)
+
+    def test_archive_folder(self):
+        folder = make_folder(self.user, "ToArchive")
+        res = self.client.post(f"/api/folders/{folder.id}/toggle_archive/")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["is_archived"])
+        folder.refresh_from_db()
+        self.assertTrue(folder.is_archived)
+
+    def test_unarchive_folder(self):
+        folder = make_folder(self.user, "AlreadyArchived")
+        folder.is_archived = True
+        folder.save()
+        res = self.client.post(f"/api/folders/{folder.id}/toggle_archive/")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["is_archived"])
+
+    def test_archived_folder_list(self):
+        active = make_folder(self.user, "Active")
+        archived = make_folder(self.user, "Archived")
+        archived.is_archived = True
+        archived.save()
+        res = self.client.get("/api/folders/?archived=true")
+        names = [f["name"] for f in res.data]
+        self.assertIn("Archived", names)
+        self.assertNotIn("Active", names)
+
+    def test_active_folder_list_excludes_archived(self):
+        active = make_folder(self.user, "Active")
+        archived = make_folder(self.user, "Archived")
+        archived.is_archived = True
+        archived.save()
+        res = self.client.get("/api/folders/")
+        names = [f["name"] for f in res.data]
+        self.assertIn("Active", names)
+        self.assertNotIn("Archived", names)
+
+    def test_archived_and_active_use_different_cache_keys(self):
+        # Warm the active cache
+        self.client.get("/api/folders/")
+        # Warm the archived cache
+        self.client.get("/api/folders/?archived=true")
+        # They should be stored under different keys
+        active_cached = get_cached(_folders_key(self.user.id, archived=False))
+        archived_cached = get_cached(_folders_key(self.user.id, archived=True))
+        # Both should be cached independently
+        self.assertIsNotNone(active_cached)
+        self.assertIsNotNone(archived_cached)
 
 
 # ===========================================================================
@@ -580,7 +665,7 @@ class DocumentCRUDTests(TestCase):
 
 
 # ===========================================================================
-# Share Feature Tests (existing, kept for completeness)
+# Share (Public Link) Tests
 # ===========================================================================
 
 class ShareActionTests(TestCase):
@@ -683,6 +768,148 @@ class ShareViewTests(TestCase):
         doc.save(update_fields=["share_token"])
         res = self.client.get(f"/api/share/{token}/")
         self.assertEqual(res.status_code, 404)
+
+
+# ===========================================================================
+# Share With User Tests (Admin)
+# ===========================================================================
+
+class ShareWithUserTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = make_user("admin_share", role="admin")
+        self.recipient = make_user("recipient")
+        self.other = make_user("other_user")
+        self.client.force_authenticate(user=self.admin)
+        cache.clear()
+
+    def test_admin_can_share_document_with_user(self):
+        doc = make_doc(self.admin, ai_analysis=SAMPLE_ANALYSIS)
+        res = self.client.post(
+            f"/api/documents/{doc.id}/share_with_user/",
+            {"user_id": self.recipient.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["shared"])
+        self.assertEqual(res.data["username"], "recipient")
+
+    def test_share_with_user_creates_permission_record(self):
+        doc = make_doc(self.admin, ai_analysis=SAMPLE_ANALYSIS)
+        self.client.post(
+            f"/api/documents/{doc.id}/share_with_user/",
+            {"user_id": self.recipient.id},
+            format="json",
+        )
+        self.assertTrue(
+            DocumentPermission.objects.filter(document=doc, user=self.recipient).exists()
+        )
+
+    def test_share_with_user_is_idempotent(self):
+        doc = make_doc(self.admin, ai_analysis=SAMPLE_ANALYSIS)
+        self.client.post(f"/api/documents/{doc.id}/share_with_user/", {"user_id": self.recipient.id}, format="json")
+        self.client.post(f"/api/documents/{doc.id}/share_with_user/", {"user_id": self.recipient.id}, format="json")
+        count = DocumentPermission.objects.filter(document=doc, user=self.recipient).count()
+        self.assertEqual(count, 1)
+
+    def test_non_admin_cannot_share_with_user(self):
+        self.client.force_authenticate(user=self.other)
+        doc = make_doc(self.other)
+        res = self.client.post(
+            f"/api/documents/{doc.id}/share_with_user/",
+            {"user_id": self.recipient.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_share_with_user_requires_user_id(self):
+        doc = make_doc(self.admin)
+        res = self.client.post(f"/api/documents/{doc.id}/share_with_user/", {}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_share_with_user_returns_404_for_unknown_user(self):
+        doc = make_doc(self.admin)
+        res = self.client.post(
+            f"/api/documents/{doc.id}/share_with_user/",
+            {"user_id": 99999},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_share_with_user_invalidates_shared_cache(self):
+        doc = make_doc(self.admin, ai_analysis=SAMPLE_ANALYSIS)
+        set_cached(_shared_key(self.recipient.id), [])
+        self.client.post(
+            f"/api/documents/{doc.id}/share_with_user/",
+            {"user_id": self.recipient.id},
+            format="json",
+        )
+        self.assertIsNone(get_cached(_shared_key(self.recipient.id)))
+
+    def test_admin_can_unshare_document(self):
+        doc = make_doc(self.admin)
+        DocumentPermission.objects.create(document=doc, user=self.recipient, permission="view")
+        res = self.client.delete(f"/api/documents/{doc.id}/share_with_user/{self.recipient.id}/")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(
+            DocumentPermission.objects.filter(document=doc, user=self.recipient).exists()
+        )
+
+    def test_unshare_returns_404_for_unknown_user(self):
+        doc = make_doc(self.admin)
+        res = self.client.delete(f"/api/documents/{doc.id}/share_with_user/99999/")
+        self.assertEqual(res.status_code, 404)
+
+
+class SharedWithMeTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = make_user("admin_swm", role="admin")
+        self.user = make_user("swm_user")
+        self.other = make_user("swm_other")
+        cache.clear()
+
+    def test_shared_with_me_returns_shared_documents(self):
+        doc = make_doc(self.admin, "shared.pdf", ai_analysis=SAMPLE_ANALYSIS)
+        DocumentPermission.objects.create(document=doc, user=self.user, permission="view")
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get("/api/documents/shared_with_me/")
+        self.assertEqual(res.status_code, 200)
+        names = [d["name"] for d in res.data]
+        self.assertIn("shared.pdf", names)
+
+    def test_shared_with_me_excludes_unshared_documents(self):
+        make_doc(self.admin, "not_shared.pdf", ai_analysis=SAMPLE_ANALYSIS)
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get("/api/documents/shared_with_me/")
+        self.assertEqual(res.status_code, 200)
+        names = [d["name"] for d in res.data]
+        self.assertNotIn("not_shared.pdf", names)
+
+    def test_shared_with_me_is_user_specific(self):
+        doc = make_doc(self.admin, "only_for_user.pdf")
+        DocumentPermission.objects.create(document=doc, user=self.user, permission="view")
+        # other user should NOT see it
+        self.client.force_authenticate(user=self.other)
+        res = self.client.get("/api/documents/shared_with_me/")
+        names = [d["name"] for d in res.data]
+        self.assertNotIn("only_for_user.pdf", names)
+
+    def test_shared_with_me_requires_authentication(self):
+        res = APIClient().get("/api/documents/shared_with_me/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_shared_with_me_returns_empty_list_when_nothing_shared(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get("/api/documents/shared_with_me/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data, [])
+
+    def test_shared_with_me_caches_result(self):
+        self.client.force_authenticate(user=self.user)
+        self.client.get("/api/documents/shared_with_me/")
+        cached = get_cached(_shared_key(self.user.id))
+        self.assertIsNotNone(cached)
 
 
 # ===========================================================================
@@ -913,7 +1140,6 @@ class CreditViewTests(TestCase):
         self.assertEqual(res.status_code, 200)
         req.refresh_from_db()
         self.assertEqual(req.status, "rejected")
-        # Credits unchanged
         self.user.refresh_from_db()
         self.assertEqual(self.user.credits, 40)
 

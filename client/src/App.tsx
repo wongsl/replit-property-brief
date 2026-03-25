@@ -61,6 +61,12 @@ function Router() {
         </AppLayout>
       </Route>
 
+      <Route path="/archive">
+        <AppLayout>
+          <ProtectedRoute component={() => <DashboardPage initialActiveTab="archive" />} />
+        </AppLayout>
+      </Route>
+
       <Route path="/explorer">
         <AppLayout>
           <ProtectedRoute component={ExplorerPage} />
