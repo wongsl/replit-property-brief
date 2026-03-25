@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Robust migration runner for production.
+Robust migration startup script.
 
-Verified production DB state (25 Mar 2026):
-- django_migrations tracks documents 0001-0005
-- documents 0006/0007/0008 schema changes EXIST (tables/columns are there)
-  but were never recorded because a previous attempt crashed mid-way
-- Solution: fake 0006-0008 to sync the record, then run any remaining work
+History: Several failed deployments left the production DB in a state where
+migrations 0006-0008 are recorded in django_migrations but the actual schema
+changes were dropped by reverse-migration SQL. We fix this by running the
+missing DDL directly (idempotently), then letting Django confirm everything
+is in sync.
 """
 import subprocess
 import sys
 import os
+import psycopg2
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -24,13 +25,46 @@ def run(cmd, check=True):
     return r.returncode == 0
 
 
-# Bring the migration record up to date with the real schema.
-# All documents migrations 0001-0008 are already applied to the DB schema;
-# we just need Django to know that so it stops trying to re-run them.
+# ── Step 1: apply any schema that may be missing due to past failed rollbacks ──
+print("Applying missing schema elements...", flush=True)
+conn = psycopg2.connect(os.environ["DATABASE_URL"])
+conn.autocommit = True
+cur = conn.cursor()
+
+# Migration 0007: folders.is_archived column
+cur.execute("""
+    ALTER TABLE folders
+        ADD COLUMN IF NOT EXISTS is_archived boolean NOT NULL DEFAULT false;
+""")
+
+# Migration 0006: folders_favorited_by M2M junction table
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS folders_favorited_by (
+        id        serial  PRIMARY KEY,
+        folder_id integer NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+        user_id   integer NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
+        UNIQUE (folder_id, user_id)
+    );
+""")
+
+# Migration 0008: combined_analyses_favorited_by M2M junction table
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS combined_analyses_favorited_by (
+        id                   serial  PRIMARY KEY,
+        combinedanalysis_id  integer NOT NULL REFERENCES combined_analyses(id) ON DELETE CASCADE,
+        user_id              integer NOT NULL REFERENCES users(id)              ON DELETE CASCADE,
+        UNIQUE (combinedanalysis_id, user_id)
+    );
+""")
+
+cur.close()
+conn.close()
+print("Schema patch complete.", flush=True)
+
+# ── Step 2: ensure all migration records are present (fake if not) ──
 run("python3.11 manage.py migrate documents 0008 --fake", check=False)
 
-# Run anything else that is genuinely pending (should be nothing at this point,
-# but this keeps the script correct for future migrations too).
+# ── Step 3: run any remaining pending migrations ──
 run("python3.11 manage.py migrate")
 
 print("All migrations complete.", flush=True)
