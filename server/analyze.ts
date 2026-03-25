@@ -44,15 +44,16 @@ function buildSystemPrompt(): string {
     "- age: A text string describing the known or estimated age (if available). " +
     "- end_of_life: A summary of whether the component is near or at the end of its life. " +
     "- recommendation: A short note on monitoring, repair, or replacement advice. Given the location, city/county, give a cost estimate for the replacement or repairs. " +
+    "If cost estimates are explicitly provided in the document for any section, always use those exact values and do not generate or infer new estimates. Only generate cost estimates when none are provided in the source document." +
     "For Permits: condition (optional), notes, recommendations. " +
-    "For Pest Inspection, structure the data with the following keys: " +
+    "For Pest, structure the data with the following keys: " +
     "- condition: overall summary of the pest inspection. " +
     "- section_1: an object for Section 1 findings (active infestation or damage requiring immediate treatment), containing: findings (array of strings), recommendations (string), estimated_cost (string). " +
     "- section_2: an object for Section 2 findings (conditions likely to lead to infestation or damage, preventive work), containing: findings (array of strings), recommendations (string), estimated_cost (string). " +
     "- notes: any general notes not specific to Section 1 or Section 2. " +
     "If no Section 1 or Section 2 findings exist, omit those keys. " +
     "For Additional Notes, structure as a nested dictionary with keys like Kitchen, Bathroom, Windows, etc., and their respective findings. " +
-    "If any information is missing or not mentioned in the input text, add a note that it was not in the disclosures provided. " +
+    "If an entire section is missing, omit it. If a section is present but specific fields are missing, include only the available fields and do not add placeholder text." +
     "Ensure the values for addressNumber and streetName contain no spaces, and split the suffix from the street name. " +
     "Do not include any commentary, markdown, or explanations — respond with a JSON object only. " +
     "Ensure the json is properly formatted and valid. " +
@@ -96,27 +97,52 @@ async function extractTextFromFile(
   }
 }
 
-function buildCombineSystemPrompt(): string {
-  return (
-    "You are an expert at merging multiple real estate inspection report analyses into a single unified analysis. " +
-    "You will receive a JSON array of individual document analyses. Each analysis has fields including: " +
-    "addressNumber, streetName, suffix, city, county, zipcode, document_type, inspection_date, fileName, and summary. " +
-    "Your task is to merge these into a single unified analysis JSON object. " +
-    "The output must have the following top-level keys: " +
-    "fileName, addressNumber, streetName, suffix, city, county, zipcode, document_type, inspection_date, summary, sources, conflict_notes. " +
-    'Set `document_type` to "Combined Analysis". ' +
-    "Set `inspection_date` to the date of the most recently dated source document (the latest inspection_date value among sources). " +
-    "Set `fileName` to 'Combined Analysis'. " +
-    "For `sources`, provide an array of objects, one per source document, each with: document_type, inspection_date, fileName. " +
-    "For `conflict_notes`, write a plain string describing any contradictions found between sources and which was preferred. " +
-    "When two sources conflict on a section, prefer the one with the later inspection_date. If dates are equal or null, note the conflict without failing. " +
-    "For the `summary` object, merge all sections (Roof, Electrical, Plumbing, Permits, Foundation, Pest Inspection, HVAC, Additional Notes) by combining findings from all sources. " +
-    "If a section appears in some documents but not others, still include it with whatever information is available. " +
-    "Do not include any commentary, markdown, or explanations — respond with a JSON object only. " +
-    "Ensure the JSON is properly formatted and valid. " +
-    "Ensure the JSON falls within the maximum token limit of 4000 tokens."
-  );
-}
+function buildCombineSystemPrompt(): string{
+    return (
+        "You are an expert at merging multiple real estate inspection report analyses into a single unified analysis. "+
+        "You will receive a JSON array of individual document analyses. Each analysis has fields including: "+
+        "addressNumber, streetName, suffix, city, county, zipcode, document_type, inspection_date, fileName, and summary. "+
+        "Your task is to merge these into a single unified analysis JSON object. "+
+
+        "The output must have the following top-level keys: "+
+        "fileName, addressNumber, streetName, suffix, city, county, zipcode, document_type, inspection_date, summary, sources, conflict_notes. "+
+
+        "Set `document_type` to \"Combined Analysis\". "+
+        "Set `inspection_date` to the date of the most recently dated source document (the latest inspection_date value among sources). "+
+        "Set `fileName` to 'Combined Analysis'. "+
+
+        "For `sources`, provide an array of objects, one per source document, each with: document_type, inspection_date, fileName. "+
+
+        "For `conflict_notes`, write a plain string describing any contradictions found between sources and which was preferred. "+
+
+        "When two sources conflict on a section, resolve using the following priority: "+
+        "1. Prefer specialized inspections over general home inspections for their respective sections. "+
+        "2. If both sources are of the same type (both specialized or both general), prefer the one with the later inspection_date. "+
+        "3. If dates are equal or null, note the conflict without failing. "+
+
+        "Specialized inspections include, but are not limited to: "+
+        "Pest Inspection (Pest-related findings), Roof Inspection (Roof), Structural/Engineering reports (Foundation), "+
+        "HVAC Inspection (HVAC), Electrical Inspection (Electrical), Plumbing Inspection (Plumbing). "+
+
+        "If a specialized inspection exists for a section, treat it as the authoritative source for that section, even if its inspection_date is earlier than a general home inspection. "+
+        "Use general home inspections only as supplementary context. "+
+
+        "When both a specialized inspection and a general inspection provide information for the same section: "+
+        "Use the specialized inspection for condition, issues, and recommendations. "+
+        "Only include additional relevant details from the general inspection if they do not contradict the specialized report. "+
+
+        "If multiple specialized inspections exist for the same section, prefer the one with the most recent inspection_date. "+
+
+        "If conflicts arise between a specialized and general inspection, always prefer the specialized inspection and document this decision in `conflict_notes`. "+
+
+        "For the `summary` object, merge all sections (Roof, Electrical, Plumbing, Permits, Foundation, Pest Inspection, HVAC, Additional Notes) by combining findings from all sources. "+
+        "If a section appears in some documents but not others, still include it with whatever information is available. "+
+
+        "Do not include any commentary, markdown, or explanations — respond with a JSON object only. "+
+        "Ensure the JSON is properly formatted and valid. "+
+        "Ensure the JSON falls within the maximum token limit of 4000 tokens."
+    );
+  }
 
 export function registerFolderCombinedAnalysisRoute(app: Express): void {
   app.post("/api/folders/:id/combined-analysis/", async (req, res) => {
