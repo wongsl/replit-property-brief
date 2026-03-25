@@ -2,12 +2,11 @@
 """
 Robust migration runner for production.
 
-Production DB state (verified by direct query):
-- django_migrations has: contenttypes 0001-0002, auth 0001-0012,
-  admin 0001-0003, sessions 0001, documents 0001
-- documents 0002-0005 columns EXIST in the schema but are NOT tracked
-  -> fake them so Django doesn't try to re-apply them
-- documents 0006-0008 are genuinely missing -> run for real
+Verified production DB state (25 Mar 2026):
+- django_migrations tracks documents 0001-0005
+- documents 0006/0007/0008 schema changes EXIST (tables/columns are there)
+  but were never recorded because a previous attempt crashed mid-way
+- Solution: fake 0006-0008 to sync the record, then run any remaining work
 """
 import subprocess
 import sys
@@ -25,15 +24,13 @@ def run(cmd, check=True):
     return r.returncode == 0
 
 
-# Mark documents 0002-0005 as applied without re-running them.
-# Their schema changes (email_draft, share_token, password_reset_tokens
-# table, clerk_id) already exist in the production database.
-run("python3.11 manage.py migrate documents 0005 --fake", check=False)
+# Bring the migration record up to date with the real schema.
+# All documents migrations 0001-0008 are already applied to the DB schema;
+# we just need Django to know that so it stops trying to re-run them.
+run("python3.11 manage.py migrate documents 0008 --fake", check=False)
 
-# Run all remaining pending migrations normally:
-#   documents 0006 - folders favorited_by M2M table
-#   documents 0007 - folders.is_archived column
-#   documents 0008 - combined_analyses favorited_by M2M table
+# Run anything else that is genuinely pending (should be nothing at this point,
+# but this keeps the script correct for future migrations too).
 run("python3.11 manage.py migrate")
 
 print("All migrations complete.", flush=True)
