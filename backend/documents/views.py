@@ -114,18 +114,30 @@ def clerk_sync(request):
             user.email = email
             user.save(update_fields=['email'])
     except User.DoesNotExist:
-        # Derive a unique username
-        base = requested_username or (email.split('@')[0] if email else clerk_id[:12])
-        username, counter = base, 1
-        while User.objects.filter(username=username).exists():
-            username = f'{base}{counter}'
-            counter += 1
-        user = User.objects.create(
-            clerk_id=clerk_id,
-            username=username,
-            email=email,
-            credits=40,
-        )
+        # Check if an existing user has this email but no clerk_id yet (pre-Clerk accounts)
+        if email:
+            try:
+                user = User.objects.select_related('team').get(email=email, clerk_id__isnull=True)
+                user.clerk_id = clerk_id
+                user.save(update_fields=['clerk_id'])
+            except User.DoesNotExist:
+                user = None
+        else:
+            user = None
+
+        if user is None:
+            # Brand new user — derive a unique username
+            base = requested_username or (email.split('@')[0] if email else clerk_id[:12])
+            username, counter = base, 1
+            while User.objects.filter(username=username).exists():
+                username = f'{base}{counter}'
+                counter += 1
+            user = User.objects.create(
+                clerk_id=clerk_id,
+                username=username,
+                email=email,
+                credits=40,
+            )
 
     request.session['user_id'] = user.id
     invalidate_user(user.id)
