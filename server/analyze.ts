@@ -1,12 +1,64 @@
 import type { Express } from "express";
 import OpenAI from "openai";
 import { PDFParse, VerbosityLevel } from "pdf-parse";
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { Readable } from "stream";
 import * as fs from "fs";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
+import {
+  TextractClient,
+  StartDocumentTextDetectionCommand,
+  GetDocumentTextDetectionCommand,
+} from "@aws-sdk/client-textract";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
 import { s3Client, S3FileRef } from "./replit_integrations/object_storage/s3Client";
 import { log } from "./index";
+
+const textractClient = new TextractClient({ region: process.env.AWS_REGION || "us-east-1" });
+
+async function extractTextWithTextract(bucketName: string, objectKey: string): Promise<string> {
+  const startRes = await textractClient.send(
+    new StartDocumentTextDetectionCommand({
+      DocumentLocation: { S3Object: { Bucket: bucketName, Name: objectKey } },
+    })
+  );
+  const jobId = startRes.JobId!;
+
+  // Poll up to 90 s (18 × 5 s)
+  for (let attempt = 0; attempt < 18; attempt++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const getRes = await textractClient.send(
+      new GetDocumentTextDetectionCommand({ JobId: jobId })
+    );
+
+    if (getRes.JobStatus === "FAILED") {
+      throw new Error(`Textract job failed: ${getRes.StatusMessage}`);
+    }
+
+    if (getRes.JobStatus === "SUCCEEDED") {
+      let blocks = getRes.Blocks ?? [];
+      let nextToken = getRes.NextToken;
+      while (nextToken) {
+        const page = await textractClient.send(
+          new GetDocumentTextDetectionCommand({ JobId: jobId, NextToken: nextToken })
+        );
+        blocks = blocks.concat(page.Blocks ?? []);
+        nextToken = page.NextToken;
+      }
+
+      return blocks
+        .filter((b) => b.BlockType === "LINE")
+        .sort((a, b) => {
+          if ((a.Page ?? 0) !== (b.Page ?? 0)) return (a.Page ?? 0) - (b.Page ?? 0);
+          return (a.Geometry?.BoundingBox?.Top ?? 0) - (b.Geometry?.BoundingBox?.Top ?? 0);
+        })
+        .map((b) => b.Text ?? "")
+        .join("\n");
+    }
+  }
+
+  throw new Error("Textract job timed out after 90 s");
+}
 
 function makePerplexityClient(): OpenAI {
   return new OpenAI({
@@ -68,10 +120,12 @@ async function extractTextFromFile(
   const objectFile = await objectStorageService.getObjectEntityFile(storagePath);
 
   let buffer: Buffer;
+  let s3Ref: S3FileRef | null = null;
   if (typeof objectFile === "string") {
     // Local storage: read from disk
     buffer = fs.readFileSync(objectFile);
   } else {
+    s3Ref = objectFile;
     // S3: stream the object
     const response = await s3Client.send(
       new GetObjectCommand({ Bucket: objectFile.bucketName, Key: objectFile.objectKey })
@@ -86,15 +140,71 @@ async function extractTextFromFile(
     buffer = Buffer.concat(chunks);
   }
 
+  // Primary extraction via pdf-parse wrapper
+  let text = "";
   try {
     const parser = new PDFParse({ data: new Uint8Array(buffer), verbosity: VerbosityLevel.ERRORS });
     const result = await parser.getText();
     await parser.destroy();
-    return result.text;
+    text = result.text;
   } catch (err) {
-    log(`PDF parsing failed, trying as plain text: ${err}`, "analyze");
-    return buffer.toString("utf-8");
+    log(`pdf-parse failed: ${err}`, "analyze");
   }
+
+  // If we got very little text (e.g. DocuSign-wrapped PDFs where real content
+  // lives in form XObjects), re-extract directly via pdfjs-dist with
+  // useSystemFonts which resolves embedded font references inside those XObjects.
+  if (text.trim().length < 500) {
+    log(`Primary extraction returned <500 chars, retrying with pdfjs-dist direct`, "analyze");
+    try {
+      const doc = await (pdfjs as any).getDocument({
+        data: new Uint8Array(buffer),
+        verbosity: 0,
+        useSystemFonts: true,
+        disableFontFace: true,
+      }).promise;
+
+      const pages: string[] = [];
+      for (let i = 1; i <= doc.numPages; i++) {
+        const page = await doc.getPage(i);
+        const content = await page.getTextContent();
+        const pageText = (content.items as any[])
+          .filter((item) => "str" in item && (item as any).str.trim())
+          .map((item) => (item as any).str)
+          .join(" ");
+        pages.push(pageText);
+        page.cleanup();
+      }
+      await doc.destroy();
+      const directText = pages.join("\n\n");
+
+      if (directText.trim().length > text.trim().length) {
+        log(`pdfjs-dist direct extraction got ${directText.length} chars (was ${text.length})`, "analyze");
+        text = directText;
+      }
+    } catch (err) {
+      log(`pdfjs-dist direct extraction failed: ${err}`, "analyze");
+    }
+  }
+
+  if (text.trim().length >= 500) return text;
+
+  // OCR fallback for scanned/image-based PDFs (e.g. DocuSign-wrapped scans).
+  // Requires the file to be in S3 so Textract can access it directly.
+  if (s3Ref) {
+    log(`Text extraction empty, attempting OCR via AWS Textract`, "analyze");
+    try {
+      text = await extractTextWithTextract(s3Ref.bucketName, s3Ref.objectKey);
+      log(`Textract OCR returned ${text.length} chars`, "analyze");
+      if (text.trim()) return text;
+    } catch (err) {
+      log(`Textract OCR failed: ${err}`, "analyze");
+    }
+  }
+
+  // Last resort: treat buffer as plain text (e.g. .txt uploads)
+  log(`All extraction attempts failed, falling back to plain text`, "analyze");
+  return buffer.toString("utf-8");
 }
 
 function buildCombineSystemPrompt(): string{
@@ -207,8 +317,13 @@ export function registerFolderCombinedAnalysisRoute(app: Express): void {
 
       let combinedAnalysis: any;
       try {
-        const cleaned = rawContent.replace(/^```json\s*/, "").replace(/```\s*$/, "").trim();
-        combinedAnalysis = JSON.parse(cleaned);
+        // Strip markdown fences, then extract outermost {...} to handle
+        // Perplexity citations or trailing text appended after the JSON object.
+        const stripped = rawContent.replace(/^```json\s*/, "").replace(/```\s*$/, "").trim();
+        const start = stripped.indexOf("{");
+        const end = stripped.lastIndexOf("}");
+        if (start === -1 || end === -1 || end < start) throw new Error("No JSON object found");
+        combinedAnalysis = JSON.parse(stripped.slice(start, end + 1));
       } catch {
         log(`Failed to parse combined AI response as JSON`, "analyze");
         return res.status(500).json({ error: "AI returned an invalid response. Please try again." });
@@ -495,8 +610,8 @@ export function registerAnalyzeRoutes(app: Express): void {
 
       const truncated = documentText.slice(0, 60000);
 
-      log(`Extracted text preview (first 500 chars): ${documentText.slice(0, 500)}`, "analyze");
-      log(`Sending ${truncated.length} chars to Perplexity for analysis`, "analyze");
+      log(`Extracted text length: ${documentText.length} chars (truncated to ${truncated.length})`, "analyze");
+      log(`---- FULL DOCUMENT TEXT SENT TO AI ----\n${truncated}\n---- END DOCUMENT TEXT ----`, "analyze");
 
       const completion = await getPerplexity().chat.completions.create({
         model: "sonar-pro",
@@ -511,6 +626,8 @@ export function registerAnalyzeRoutes(app: Express): void {
       });
 
       const rawContent = completion.choices[0]?.message?.content || "";
+
+      log(`---- RAW AI RESPONSE ----\n${rawContent}\n---- END AI RESPONSE ----`, "analyze");
 
       let analysisJson: any;
       try {
