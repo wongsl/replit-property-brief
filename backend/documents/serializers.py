@@ -41,14 +41,21 @@ class CombinedAnalysisSerializer(serializers.ModelSerializer):
         source='source_documents', many=True, read_only=True
     )
     source_document_names = serializers.SerializerMethodField()
+    is_favorited = serializers.SerializerMethodField()
 
     def get_source_document_names(self, obj):
         return [{'id': d.id, 'name': d.name} for d in obj.source_documents.all()]
 
+    def get_is_favorited(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.favorited_by.filter(pk=request.user.pk).exists()
+        return False
+
     class Meta:
         model = CombinedAnalysis
         fields = ['id', 'folder', 'owner', 'source_document_ids', 'source_document_names',
-                  'combined_analysis', 'created_at']
+                  'combined_analysis', 'is_favorited', 'created_at']
 
 
 class FolderSerializer(serializers.ModelSerializer):
@@ -57,10 +64,11 @@ class FolderSerializer(serializers.ModelSerializer):
     full_path = serializers.CharField(read_only=True)
     children = serializers.SerializerMethodField()
     combined_analyses = CombinedAnalysisSerializer(many=True, read_only=True)
+    is_favorited = serializers.SerializerMethodField()
 
     class Meta:
         model = Folder
-        fields = ['id', 'name', 'parent', 'parent_name', 'full_path', 'owner', 'team', 'position', 'created_at', 'document_count', 'children', 'combined_analyses']
+        fields = ['id', 'name', 'parent', 'parent_name', 'full_path', 'owner', 'team', 'position', 'created_at', 'document_count', 'children', 'combined_analyses', 'is_favorited', 'is_archived']
         read_only_fields = ['owner']
 
     def get_children(self, obj):
@@ -68,7 +76,13 @@ class FolderSerializer(serializers.ModelSerializer):
             children = obj._prefetched_children
         else:
             children = obj.children.all()
-        return FolderSerializer(children, many=True).data
+        return FolderSerializer(children, many=True, context=self.context).data
+
+    def get_is_favorited(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.favorited_by.filter(pk=request.user.pk).exists()
+        return False
 
 
 class DocumentSerializer(serializers.ModelSerializer):

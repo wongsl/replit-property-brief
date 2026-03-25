@@ -32,6 +32,8 @@ class Folder(models.Model):
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='folders')
     team = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True, related_name='folders')
     position = models.IntegerField(default=0)
+    favorited_by = models.ManyToManyField(User, related_name='favorite_folders', blank=True)
+    is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -129,6 +131,7 @@ class CombinedAnalysis(models.Model):
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='combined_analyses')
     source_documents = models.ManyToManyField(Document, related_name='combined_in')
     combined_analysis = models.JSONField()
+    favorited_by = models.ManyToManyField(User, related_name='favorite_combined_analyses', blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

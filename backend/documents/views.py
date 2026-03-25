@@ -272,9 +272,14 @@ class FolderViewSet(viewsets.ModelViewSet):
             document_count=Count('documents')
         )
         if self.action == 'list':
-            show_all = self.request.query_params.get('all', None)
-            if not show_all:
-                qs = qs.filter(parent__isnull=True)
+            archived = self.request.query_params.get('archived', None)
+            if archived == 'true':
+                qs = qs.filter(is_archived=True, parent__isnull=True)
+            else:
+                qs = qs.filter(is_archived=False)
+                show_all = self.request.query_params.get('all', None)
+                if not show_all:
+                    qs = qs.filter(parent__isnull=True)
         return qs
 
     def list(self, request, *args, **kwargs):
@@ -338,6 +343,26 @@ class FolderViewSet(viewsets.ModelViewSet):
             Folder.objects.filter(id=folder_id, owner=request.user).update(position=idx)
         invalidate_folders(request.user.id)
         return Response({'status': 'ok'})
+
+    @action(detail=True, methods=['post'])
+    def toggle_favorite(self, request, pk=None):
+        folder = self.get_object()
+        if folder.favorited_by.filter(pk=request.user.pk).exists():
+            folder.favorited_by.remove(request.user)
+            is_favorited = False
+        else:
+            folder.favorited_by.add(request.user)
+            is_favorited = True
+        invalidate_folders(request.user.id)
+        return Response({'is_favorited': is_favorited})
+
+    @action(detail=True, methods=['post'])
+    def toggle_archive(self, request, pk=None):
+        folder = self.get_object()
+        folder.is_archived = not folder.is_archived
+        folder.save(update_fields=['is_archived'])
+        invalidate_folders(request.user.id)
+        return Response({'is_archived': folder.is_archived})
 
 
 # --- Document Views ---
@@ -518,6 +543,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         else:
             doc.favorited_by.add(request.user)
             is_favorited = True
+        invalidate_docs(request.user.id, getattr(request.user, 'team_id', None))
         return Response({'is_favorited': is_favorited})
 
     @action(detail=True, methods=['post'])
@@ -1009,3 +1035,15 @@ class CombinedAnalysisViewSet(viewsets.ModelViewSet):
         folder_id = instance.folder_id
         instance.delete()
         invalidate_folders(self.request.user.id)
+
+    @action(detail=True, methods=['post'])
+    def toggle_favorite(self, request, pk=None):
+        record = self.get_object()
+        if record.favorited_by.filter(pk=request.user.pk).exists():
+            record.favorited_by.remove(request.user)
+            is_favorited = False
+        else:
+            record.favorited_by.add(request.user)
+            is_favorited = True
+        invalidate_folders(request.user.id)
+        return Response({'is_favorited': is_favorited})

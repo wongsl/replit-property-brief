@@ -1,19 +1,16 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/lib/mock-auth";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog";
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
 import {
   FileText, FileImage, FileCode, FileIcon, Search, FolderOpen,
-  MoreVertical, Eye, ChevronRight, ChevronDown, Sparkles, Users, User,
+  ChevronRight, ChevronDown, Sparkles, Users, User, ArrowUpDown,
 } from "lucide-react";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 
 type AdminDoc = {
   id: number;
@@ -39,12 +36,13 @@ export default function ExplorerPage() {
   const [documents, setDocuments] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
-  const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
-  const [selectedFile, setSelectedFile] = useState<any>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<'folder' | 'all'>('folder');
   const [adminDocuments, setAdminDocuments] = useState<AdminDoc[] | null>(null);
   const [adminDocsLoading, setAdminDocsLoading] = useState(false);
   const [collapsedUserGroups, setCollapsedUserGroups] = useState<Set<string>>(new Set());
+  const [expandedAnalysis, setExpandedAnalysis] = useState<Set<number>>(new Set());
+  const [sortConfig, setSortConfig] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -56,15 +54,59 @@ export default function ExplorerPage() {
     });
   }, []);
 
-  const filteredDocs = useMemo(() => {
-    if (!searchQuery) return documents;
-    const q = searchQuery.toLowerCase();
-    return documents.filter(d =>
-      d.name.toLowerCase().includes(q) ||
-      d.folder_name?.toLowerCase().includes(q) ||
-      d.tags?.some((t: any) => t.name.toLowerCase().includes(q))
+  const handleSort = (key: string) => {
+    setSortConfig(prev =>
+      prev?.key === key && prev.dir === 'asc'
+        ? { key, dir: 'desc' }
+        : { key, dir: 'asc' }
     );
-  }, [documents, searchQuery]);
+  };
+
+  const getSortValue = (doc: any, key: string) => {
+    if (key.startsWith('ai_analysis.')) {
+      const field = key.slice('ai_analysis.'.length);
+      return doc.ai_analysis?.[field] ?? '';
+    }
+    return doc[key] ?? '';
+  };
+
+  const toggleAnalysisExpanded = (id: number) => {
+    setExpandedAnalysis(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const filteredDocs = useMemo(() => {
+    let docs = documents;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      docs = docs.filter(d => {
+        const ai = d.ai_analysis;
+        return (
+          d.name.toLowerCase().includes(q) ||
+          d.folder_name?.toLowerCase().includes(q) ||
+          d.tags?.some((t: any) => t.name.toLowerCase().includes(q)) ||
+          ai?.city?.toLowerCase().includes(q) ||
+          ai?.county?.toLowerCase().includes(q) ||
+          ai?.streetName?.toLowerCase().includes(q) ||
+          [ai?.addressNumber, ai?.streetName, ai?.suffix].filter(Boolean).join(' ').toLowerCase().includes(q)
+        );
+      });
+    }
+    if (sortConfig) {
+      docs = [...docs].sort((a, b) => {
+        const va = getSortValue(a, sortConfig.key);
+        const vb = getSortValue(b, sortConfig.key);
+        const cmp = typeof va === 'number' && typeof vb === 'number'
+          ? va - vb
+          : String(va).localeCompare(String(vb));
+        return sortConfig.dir === 'asc' ? cmp : -cmp;
+      });
+    }
+    return docs;
+  }, [documents, searchQuery, sortConfig]);
 
   const groupedDocs = useMemo(() => {
     const grouped: Record<string, any[]> = {};
@@ -104,13 +146,21 @@ export default function ExplorerPage() {
     const byTeam: Record<string, Record<string, AdminDoc[]>> = {};
     for (const doc of filteredAdminDocs) {
       const team = doc.team_name ?? 'No Team';
-      const user = doc.owner_name;
+      const owner = doc.owner_name;
       if (!byTeam[team]) byTeam[team] = {};
-      if (!byTeam[team][user]) byTeam[team][user] = [];
-      byTeam[team][user].push(doc);
+      if (!byTeam[team][owner]) byTeam[team][owner] = [];
+      byTeam[team][owner].push(doc);
     }
     return byTeam;
   }, [filteredAdminDocs]);
+
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
 
   const toggleUserGroup = (key: string) => {
     setCollapsedUserGroups(prev => {
@@ -121,18 +171,138 @@ export default function ExplorerPage() {
   };
 
   const getFileIcon = (type: string) => {
-    if (type === "pdf") return <FileText className="h-8 w-8 text-red-500" />;
-    if (type === "image") return <FileImage className="h-8 w-8 text-purple-500" />;
-    if (type === "code") return <FileCode className="h-8 w-8 text-blue-500" />;
-    return <FileIcon className="h-8 w-8 text-muted-foreground" />;
-  };
-
-  const toggleGroup = (group: string) => {
-    setCollapsedGroups(prev => prev.includes(group) ? prev.filter(g => g !== group) : [...prev, group]);
+    if (type === "pdf") return <FileText className="h-4 w-4 text-red-500" />;
+    if (type === "image") return <FileImage className="h-4 w-4 text-purple-500" />;
+    if (type === "code") return <FileCode className="h-4 w-4 text-blue-500" />;
+    return <FileIcon className="h-4 w-4 text-muted-foreground" />;
   };
 
   const hasAnalysis = (file: any) =>
     file.ai_analysis && typeof file.ai_analysis === 'object' && !file.ai_analysis.raw_response;
+
+  const sortIcon = (key: string) => (
+    <ArrowUpDown className={`inline h-3 w-3 ${sortConfig?.key === key ? 'text-primary' : 'opacity-30'}`} />
+  );
+
+  const tableHeader = (
+    <TableHeader>
+      <TableRow>
+        <TableHead className="cursor-pointer" onClick={() => handleSort('name')}>
+          Name {sortIcon('name')}
+        </TableHead>
+        <TableHead>Tags</TableHead>
+        <TableHead className="cursor-pointer" onClick={() => handleSort('owner_name')}>
+          Owner {sortIcon('owner_name')}
+        </TableHead>
+        <TableHead className="cursor-pointer" onClick={() => handleSort('ai_score')}>
+          Score {sortIcon('ai_score')}
+        </TableHead>
+        <TableHead className="cursor-pointer" onClick={() => handleSort('ai_analysis.city')}>
+          City {sortIcon('ai_analysis.city')}
+        </TableHead>
+        <TableHead className="cursor-pointer" onClick={() => handleSort('ai_analysis.county')}>
+          County {sortIcon('ai_analysis.county')}
+        </TableHead>
+        <TableHead>Folder</TableHead>
+      </TableRow>
+    </TableHeader>
+  );
+
+  const renderFileRow = (file: any) => {
+    const isExpanded = expandedAnalysis.has(file.id);
+    const hasAi = hasAnalysis(file);
+    return (
+      <React.Fragment key={file.id}>
+        <TableRow className="hover:bg-muted/40">
+          <TableCell>
+            <div className="flex items-center gap-2">
+              {getFileIcon(file.file_type)}
+              <div className="flex flex-col">
+                <span className="text-sm">{file.name}</span>
+                {file.ai_analysis && (file.ai_analysis.addressNumber || file.ai_analysis.city || file.ai_analysis.county) && (
+                  <span className="text-[10px] text-muted-foreground leading-tight">
+                    {[
+                      [file.ai_analysis.addressNumber, file.ai_analysis.streetName, file.ai_analysis.suffix].filter(Boolean).join(' '),
+                      file.ai_analysis.city,
+                      file.ai_analysis.county,
+                    ].filter(Boolean).join(' · ')}
+                  </span>
+                )}
+              </div>
+              {hasAi && (
+                <Button
+                  variant="ghost" size="sm"
+                  className="h-6 gap-1 px-2 text-[10px] bg-green-500/10 text-green-600 hover:bg-green-500/20 border border-green-500/20 rounded-full"
+                  onClick={() => toggleAnalysisExpanded(file.id)}
+                >
+                  {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                  <Sparkles className="h-3 w-3" />Analyzed
+                </Button>
+              )}
+            </div>
+          </TableCell>
+          <TableCell>
+            <div className="flex flex-wrap gap-1">
+              {file.tags?.map((t: any) => (
+                <Badge key={t.id ?? t.name} variant="secondary" className="text-[10px]">{t.name}</Badge>
+              ))}
+            </div>
+          </TableCell>
+          <TableCell className="text-xs text-muted-foreground">{file.owner_name}</TableCell>
+          <TableCell>
+            {file.ai_score
+              ? <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px]">{file.ai_score}%</Badge>
+              : "--"}
+          </TableCell>
+          <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.city || "--"}</TableCell>
+          <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.county || "--"}</TableCell>
+          <TableCell className="text-xs text-muted-foreground">{file.folder_name || "—"}</TableCell>
+        </TableRow>
+        {isExpanded && hasAi && (
+          <TableRow className="bg-muted/30 hover:bg-muted/40">
+            <TableCell colSpan={7} className="p-0">
+              <div className="px-6 py-4 max-h-[500px] overflow-auto">
+                <AnalysisReport analysis={file.ai_analysis} />
+              </div>
+            </TableCell>
+          </TableRow>
+        )}
+      </React.Fragment>
+    );
+  };
+
+  const renderAdminFileRow = (file: AdminDoc) => (
+    <TableRow key={file.id} className="hover:bg-muted/40">
+      <TableCell>
+        <div className="flex items-center gap-2">
+          {getFileIcon(file.file_type)}
+          <span className="text-sm">{file.name}</span>
+          {file.analyzed && (
+            <Badge className="text-[9px] h-4 px-1.5 gap-1 bg-green-500/10 text-green-600 border-green-500/20">
+              <Sparkles className="h-2.5 w-2.5" />Analyzed
+            </Badge>
+          )}
+        </div>
+      </TableCell>
+      <TableCell></TableCell>
+      <TableCell className="text-xs text-muted-foreground">{file.owner_name}</TableCell>
+      <TableCell>--</TableCell>
+      <TableCell className="text-xs text-muted-foreground">--</TableCell>
+      <TableCell className="text-xs text-muted-foreground">--</TableCell>
+      <TableCell className="text-xs text-muted-foreground">{file.folder_name || "—"}</TableCell>
+    </TableRow>
+  );
+
+  const emptyState = (
+    <TableRow>
+      <TableCell colSpan={7}>
+        <div className="py-16 text-center space-y-3">
+          <Search className="h-6 w-6 text-muted-foreground mx-auto" />
+          <p className="text-muted-foreground text-sm">No files found.</p>
+        </div>
+      </TableCell>
+    </TableRow>
+  );
 
   return (
     <div className="space-y-8">
@@ -162,201 +332,116 @@ export default function ExplorerPage() {
           )}
           <div className="relative w-full max-w-sm">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="Search folders or files..." className="pl-9 bg-card" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} data-testid="input-explorer-search" />
+            <Input
+              placeholder="Search files, folders, tags, city, county..."
+              className="pl-9 bg-card"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              data-testid="input-explorer-search"
+            />
           </div>
         </div>
       </div>
 
-      <div className="space-y-6">
+      <Card className="overflow-hidden">
         {viewMode === 'all' ? (
           adminDocsLoading ? (
             <div className="py-20 text-center text-muted-foreground">Loading all files...</div>
           ) : (
-            <>
-              {Object.keys(adminGrouped).sort((a, b) => {
-                if (a === 'No Team') return 1;
-                if (b === 'No Team') return -1;
-                return a.localeCompare(b);
-              }).map((teamName) => {
-                const teamCollapsed = collapsedGroups.includes(teamName);
-                const userMap = adminGrouped[teamName];
-                const teamTotal = Object.values(userMap).reduce((n, docs) => n + docs.length, 0);
-                return (
-                  <div key={teamName} className="space-y-4">
-                    <button onClick={() => toggleGroup(teamName)} className="flex items-center gap-2 w-full text-left">
-                      {teamCollapsed ? <ChevronRight className="h-5 w-5 text-muted-foreground" /> : <ChevronDown className="h-5 w-5 text-muted-foreground" />}
-                      <Users className="h-5 w-5 text-primary" />
-                      <h3 className="font-bold uppercase tracking-wider text-sm">{teamName}</h3>
-                      <Badge variant="secondary" className="ml-2">{teamTotal}</Badge>
-                      <div className="flex-1 h-px bg-border ml-4" />
-                    </button>
-                    {!teamCollapsed && Object.keys(userMap).sort((a, b) => a.localeCompare(b)).map((userName) => {
-                      const userKey = `${teamName}::${userName}`;
-                      const userCollapsed = collapsedUserGroups.has(userKey);
-                      const docs = userMap[userName];
-                      return (
-                        <div key={userKey} className="space-y-3 pl-6">
-                          <button onClick={() => toggleUserGroup(userKey)} className="flex items-center gap-2 w-full text-left">
-                            {userCollapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-                            <User className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm font-medium text-muted-foreground">@{userName}</span>
-                            <Badge variant="outline" className="ml-1 text-xs">{docs.length}</Badge>
-                          </button>
-                          {!userCollapsed && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                              {docs.map((file) => (
-                                <Card
-                                  key={file.id}
-                                  className="group hover:border-primary/50 transition-all hover:shadow-md cursor-pointer overflow-hidden border-border/40 bg-card/50"
-                                  onClick={() => setSelectedFile(file)}
-                                >
-                                  <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative">
-                                    <div className="p-4 bg-background rounded-xl group-hover:scale-110 transition-transform shadow-sm border">
-                                      {getFileIcon(file.file_type)}
-                                    </div>
-                                    <div className="space-y-1 w-full overflow-hidden">
-                                      <p className="font-medium text-sm truncate px-2">{file.name}</p>
-                                      <p className="text-[10px] text-muted-foreground uppercase tracking-widest">{file.file_size} &middot; {file.file_type}</p>
-                                    </div>
-                                    {file.analyzed && (
-                                      <Badge className="text-[9px] h-4 px-1.5 gap-1 bg-green-500/10 text-green-600 border-green-500/20">
-                                        <Sparkles className="h-2.5 w-2.5" />Analyzed
-                                      </Badge>
-                                    )}
-                                  </CardContent>
-                                </Card>
-                              ))}
+            <Table>
+              {tableHeader}
+              <TableBody>
+                {Object.keys(adminGrouped).length === 0 ? emptyState : (
+                  Object.keys(adminGrouped).sort((a, b) => {
+                    if (a === 'No Team') return 1;
+                    if (b === 'No Team') return -1;
+                    return a.localeCompare(b);
+                  }).map((teamName) => {
+                    const teamCollapsed = collapsedGroups.has(teamName);
+                    const userMap = adminGrouped[teamName];
+                    const teamTotal = Object.values(userMap).reduce((n, docs) => n + docs.length, 0);
+                    return (
+                      <React.Fragment key={teamName}>
+                        <TableRow
+                          className="bg-muted/30 hover:bg-muted/40 cursor-pointer"
+                          onClick={() => toggleGroup(teamName)}
+                        >
+                          <TableCell colSpan={7}>
+                            <div className="flex items-center gap-2">
+                              {teamCollapsed
+                                ? <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                              <Users className="h-4 w-4 text-primary" />
+                              <span className="font-bold uppercase tracking-wider text-sm">{teamName}</span>
+                              <Badge variant="secondary" className="ml-1">{teamTotal}</Badge>
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-              {Object.keys(adminGrouped).length === 0 && (
-                <div className="py-20 text-center space-y-4 border-2 border-dashed rounded-3xl bg-muted/20">
-                  <Search className="h-6 w-6 text-muted-foreground mx-auto" />
-                  <p className="text-muted-foreground">No files found.</p>
-                </div>
-              )}
-            </>
+                          </TableCell>
+                        </TableRow>
+                        {!teamCollapsed && Object.keys(userMap).sort((a, b) => a.localeCompare(b)).map((userName) => {
+                          const userKey = `${teamName}::${userName}`;
+                          const userCollapsed = collapsedUserGroups.has(userKey);
+                          const docs = userMap[userName];
+                          return (
+                            <React.Fragment key={userKey}>
+                              <TableRow
+                                className="bg-muted/10 hover:bg-muted/20 cursor-pointer"
+                                onClick={() => toggleUserGroup(userKey)}
+                              >
+                                <TableCell colSpan={7} className="pl-10">
+                                  <div className="flex items-center gap-2">
+                                    {userCollapsed
+                                      ? <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                                      : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
+                                    <User className="h-3.5 w-3.5 text-muted-foreground" />
+                                    <span className="text-sm text-muted-foreground">@{userName}</span>
+                                    <Badge variant="outline" className="ml-1 text-xs">{docs.length}</Badge>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                              {!userCollapsed && docs.map(renderAdminFileRow)}
+                            </React.Fragment>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
           )
         ) : (
-          <>
-            {Object.entries(groupedDocs).map(([group, files]) => (
-              <div key={group} className="space-y-4">
-                <button onClick={() => toggleGroup(group)} className="flex items-center gap-2 group w-full text-left">
-                  {collapsedGroups.includes(group) ? <ChevronRight className="h-5 w-5 text-muted-foreground" /> : <ChevronDown className="h-5 w-5 text-muted-foreground" />}
-                  <FolderOpen className="h-5 w-5 text-primary" />
-                  <h3 className="font-bold uppercase tracking-wider text-sm">{group}</h3>
-                  <Badge variant="secondary" className="ml-2">{files.length}</Badge>
-                  <div className="flex-1 h-px bg-border ml-4" />
-                </button>
-                {!collapsedGroups.includes(group) && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                    {files.map((file: any) => (
-                      <Card
-                        key={file.id}
-                        className="group hover:border-primary/50 transition-all hover:shadow-md cursor-pointer overflow-hidden border-border/40 bg-card/50"
-                        onClick={() => setSelectedFile(file)}
+          <Table>
+            {tableHeader}
+            <TableBody>
+              {Object.keys(groupedDocs).every(g => groupedDocs[g].length === 0) ? emptyState : (
+                Object.entries(groupedDocs).map(([group, files]) => {
+                  const isCollapsed = collapsedGroups.has(group);
+                  return (
+                    <React.Fragment key={group}>
+                      <TableRow
+                        className="bg-muted/20 hover:bg-muted/30 cursor-pointer"
+                        onClick={() => toggleGroup(group)}
                       >
-                        <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative">
-                          <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                                <Button variant="ghost" size="icon" className="h-6 w-6"><MoreVertical className="h-4 w-4" /></Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent>
-                                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setSelectedFile(file); }}>
-                                  <Eye className="mr-2 h-4 w-4" /> View Details
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
+                        <TableCell colSpan={7}>
+                          <div className="flex items-center gap-2">
+                            {isCollapsed
+                              ? <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                              : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                            <FolderOpen className="h-4 w-4 text-primary" />
+                            <span className="font-bold uppercase tracking-wider text-sm">{group}</span>
+                            <Badge variant="secondary" className="ml-1">{files.length}</Badge>
                           </div>
-                          <div className="p-4 bg-background rounded-xl group-hover:scale-110 transition-transform shadow-sm border">
-                            {getFileIcon(file.file_type)}
-                          </div>
-                          <div className="space-y-1 w-full overflow-hidden">
-                            <p className="font-medium text-sm truncate px-2">{file.name}</p>
-                            <p className="text-[10px] text-muted-foreground uppercase tracking-widest">{file.file_size} &middot; {file.file_type}</p>
-                          </div>
-                          <div className="flex flex-wrap justify-center gap-1">
-                            {hasAnalysis(file) && (
-                              <Badge className="text-[9px] h-4 px-1.5 gap-1 bg-green-500/10 text-green-600 border-green-500/20">
-                                <Sparkles className="h-2.5 w-2.5" />Analyzed
-                              </Badge>
-                            )}
-                            {file.tags?.slice(0, 2).map((t: any) => (
-                              <Badge key={t.id} variant="outline" className="text-[9px] h-4 px-1 lowercase font-normal">{t.name}</Badge>
-                            ))}
-                            {file.tags?.length > 2 && <Badge variant="outline" className="text-[9px] h-4 px-1">+{file.tags.length - 2}</Badge>}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-            {Object.keys(groupedDocs).length === 0 && (
-              <div className="py-20 text-center space-y-4 border-2 border-dashed rounded-3xl bg-muted/20">
-                <Search className="h-6 w-6 text-muted-foreground mx-auto" />
-                <p className="text-muted-foreground">No files found.</p>
-              </div>
-            )}
-          </>
+                        </TableCell>
+                      </TableRow>
+                      {!isCollapsed && files.map(renderFileRow)}
+                    </React.Fragment>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
         )}
-      </div>
-
-      {/* File detail / analysis dialog */}
-      <Dialog open={!!selectedFile} onOpenChange={(open) => !open && setSelectedFile(null)}>
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              {selectedFile && getFileIcon(selectedFile.file_type)}
-              <span className="truncate">{selectedFile?.name}</span>
-              {selectedFile && hasAnalysis(selectedFile) && (
-                <Badge className="ml-2 shrink-0 bg-green-500/10 text-green-600 border-green-500/20 gap-1">
-                  <Sparkles className="h-3 w-3" />Analyzed
-                </Badge>
-              )}
-            </DialogTitle>
-          </DialogHeader>
-
-          {selectedFile && (
-            <div className="space-y-4 pt-2">
-              {/* File metadata */}
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div><span className="text-muted-foreground">Type:</span> {selectedFile.file_type}</div>
-                <div><span className="text-muted-foreground">Size:</span> {selectedFile.file_size}</div>
-                <div><span className="text-muted-foreground">Owner:</span> {selectedFile.owner_name}</div>
-                <div><span className="text-muted-foreground">Folder:</span> {selectedFile.folder_name || "—"}</div>
-                {selectedFile.team_name && (
-                  <div><span className="text-muted-foreground">Team:</span> {selectedFile.team_name}</div>
-                )}
-                {selectedFile.tags?.length > 0 && (
-                  <div className="col-span-2 flex flex-wrap gap-1 items-center">
-                    <span className="text-muted-foreground">Tags:</span>
-                    {selectedFile.tags.map((t: any) => (
-                      <Badge key={t.id} variant="secondary" className="text-[10px]">{t.name}</Badge>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Analysis */}
-              {hasAnalysis(selectedFile) ? (
-                <AnalysisReport analysis={selectedFile.ai_analysis} />
-              ) : (
-                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                  No analysis available for this file.
-                </div>
-              )}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      </Card>
     </div>
   );
 }
@@ -432,7 +517,7 @@ function AnalysisReport({ analysis }: { analysis: any }) {
 
       <div className="space-y-3">
         <h3 className="text-sm font-bold">Inspection Summary</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3">
           {mainSections.map(section => summary[section] && (
             <InspectionSection key={section} title={section} data={summary[section]} />
           ))}

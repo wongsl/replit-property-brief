@@ -44,10 +44,13 @@ function buildSystemPrompt(): string {
     "- age: A text string describing the known or estimated age (if available). " +
     "- end_of_life: A summary of whether the component is near or at the end of its life. " +
     "- recommendation: A short note on monitoring, repair, or replacement advice. Given the location, city/county, give a cost estimate for the replacement or repairs. " +
-    "For Permits and Pest Inspection: " +
-    "- condition (optional), " +
-    "- notes, " +
-    "- recommendations. " +
+    "For Permits: condition (optional), notes, recommendations. " +
+    "For Pest Inspection, structure the data with the following keys: " +
+    "- condition: overall summary of the pest inspection. " +
+    "- section_1: an object for Section 1 findings (active infestation or damage requiring immediate treatment), containing: findings (array of strings), recommendations (string), estimated_cost (string). " +
+    "- section_2: an object for Section 2 findings (conditions likely to lead to infestation or damage, preventive work), containing: findings (array of strings), recommendations (string), estimated_cost (string). " +
+    "- notes: any general notes not specific to Section 1 or Section 2. " +
+    "If no Section 1 or Section 2 findings exist, omit those keys. " +
     "For Additional Notes, structure as a nested dictionary with keys like Kitchen, Bathroom, Windows, etc., and their respective findings. " +
     "If any information is missing or not mentioned in the input text, add a note that it was not in the disclosures provided. " +
     "Ensure the values for addressNumber and streetName contain no spaces, and split the suffix from the street name. " +

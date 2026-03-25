@@ -13,7 +13,7 @@ import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
   ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, Minus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
-  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail, Share2
+  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail, Share2, Pencil, Archive, ArchiveRestore
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -33,6 +33,7 @@ import {
 } from '@dnd-kit/sortable';
 import {CSS} from '@dnd-kit/utilities';
 import { cn } from "@/lib/utils";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 async function apiFetch(url: string, options: RequestInit = {}) {
   const res = await fetch(url, {
@@ -108,11 +109,22 @@ function removeCombinedAnalysisFromFolder(folder: any, recordId: number): any {
   };
 }
 
+function updateCombinedFavoriteInChildren(children: any[], recordId: number, is_favorited: boolean): any[] {
+  return children.map(c => ({
+    ...c,
+    combined_analyses: (c.combined_analyses || []).map((ca: any) =>
+      ca.id === recordId ? { ...ca, is_favorited } : ca
+    ),
+    children: updateCombinedFavoriteInChildren(c.children || [], recordId, is_favorited),
+  }));
+}
+
 export default function DashboardPage({ initialFavoritesOnly = false }: { initialFavoritesOnly?: boolean } = {}) {
   const { user, refreshUser, decrementRateLimit, rateLimitRemaining, resetRateLimit } = useAuth();
   const { toast } = useToast();
   const [documents, setDocuments] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
+  const [archivedFolders, setArchivedFolders] = useState<any[]>([]);
   const [teams, setTeams] = useState<{id: number, name: string}[]>([]);
   const [activeTab, setActiveTab] = useState("my-files");
   const [isUploading, setIsUploading] = useState(false);
@@ -122,10 +134,14 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
   const [uploadTotal, setUploadTotal] = useState(0);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadPrivate, setUploadPrivate] = useState(false);
+  const [uploadDestType, setUploadDestType] = useState<'existing' | 'new'>('new');
+  const [uploadDestFolderId, setUploadDestFolderId] = useState<number | null>(null);
+  const [uploadDestNewName, setUploadDestNewName] = useState('');
   const [selectedFile, setSelectedFile] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [groupBy, setGroupBy] = useState(true);
   const [newGroupName, setNewGroupName] = useState("");
+  const [folderPopoverOpen, setFolderPopoverOpen] = useState(false);
   const [editingFileId, setEditingFileId] = useState<number | null>(null);
   const [tempFileName, setTempFileName] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -177,12 +193,14 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
 
   const loadData = async () => {
     const scope = activeTab === "team-files" ? "team" : "mine";
-    const [docsRes, foldersRes] = await Promise.all([
+    const [docsRes, foldersRes, archivedRes] = await Promise.all([
       apiFetch(`/api/documents/?scope=${scope}`),
       apiFetch('/api/folders/'),
+      apiFetch('/api/folders/?archived=true'),
     ]);
     if (docsRes.ok) setDocuments(await docsRes.json());
     if (foldersRes.ok) setFolders(await foldersRes.json());
+    if (archivedRes.ok) setArchivedFolders(await archivedRes.json());
   };
 
   useEffect(() => { loadData(); }, [activeTab]);
@@ -242,6 +260,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
         setCollapsedGroups(new Set(collapsedGroups));
       } else {
         setNewGroupName("");
+        setFolderPopoverOpen(false);
       }
       loadData();
     }
@@ -350,7 +369,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     return { allowed, rejected };
   };
 
-  const uploadFiles = async (files: File[], isPrivate: boolean) => {
+  const uploadFiles = async (files: File[], isPrivate: boolean, overrideFolderId?: number | null) => {
     setIsUploading(true);
     setUploadTotal(files.length);
 
@@ -402,26 +421,34 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
         }
 
         const newDoc = await res.json();
-        const currentFlat = flattenFolders(currentFolders);
-        const { matchedFolder, suggestedName } = categorizeName(file.name, currentFlat);
 
-        if (matchedFolder) {
+        if (overrideFolderId != null) {
           await apiFetch(`/api/documents/${newDoc.id}/move/`, {
             method: 'POST',
-            body: JSON.stringify({ folder_id: matchedFolder.id }),
+            body: JSON.stringify({ folder_id: overrideFolderId }),
           });
-        } else if (suggestedName) {
-          const folderRes = await apiFetch('/api/folders/', {
-            method: 'POST',
-            body: JSON.stringify({ name: suggestedName }),
-          });
-          if (folderRes.ok) {
-            const newFolder = await folderRes.json();
-            currentFolders = [...currentFolders, newFolder];
+        } else {
+          const currentFlat = flattenFolders(currentFolders);
+          const { matchedFolder, suggestedName } = categorizeName(file.name, currentFlat);
+
+          if (matchedFolder) {
             await apiFetch(`/api/documents/${newDoc.id}/move/`, {
               method: 'POST',
-              body: JSON.stringify({ folder_id: newFolder.id }),
+              body: JSON.stringify({ folder_id: matchedFolder.id }),
             });
+          } else if (suggestedName) {
+            const folderRes = await apiFetch('/api/folders/', {
+              method: 'POST',
+              body: JSON.stringify({ name: suggestedName }),
+            });
+            if (folderRes.ok) {
+              const newFolder = await folderRes.json();
+              currentFolders = [...currentFolders, newFolder];
+              await apiFetch(`/api/documents/${newDoc.id}/move/`, {
+                method: 'POST',
+                body: JSON.stringify({ folder_id: newFolder.id }),
+              });
+            }
           }
         }
 
@@ -443,7 +470,33 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
 
   const handleUpload = async (isPrivate = false, folderMode = false) => {
     if (!decrementRateLimit()) return;
+
+    // Resolve destination folder before opening file picker
+    let resolvedFolderId: number | null | undefined = undefined;
+    if (uploadDestType === 'existing' && uploadDestFolderId != null) {
+      resolvedFolderId = uploadDestFolderId;
+    } else if (uploadDestType === 'new' && uploadDestNewName.trim()) {
+      const trimmed = uploadDestNewName.trim();
+      const existingMatch = flatFolders.find(f => f.name.toLowerCase() === trimmed.toLowerCase());
+      if (existingMatch) {
+        resolvedFolderId = existingMatch.id;
+      } else {
+        const folderRes = await apiFetch('/api/folders/', {
+          method: 'POST',
+          body: JSON.stringify({ name: trimmed }),
+        });
+        if (folderRes.ok) {
+          const newFolder = await folderRes.json();
+          resolvedFolderId = newFolder.id;
+          setFolders(prev => [...prev, newFolder]);
+        }
+      }
+    }
+
     setShowUploadDialog(false);
+    setUploadDestType('new');
+    setUploadDestFolderId(null);
+    setUploadDestNewName('');
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = true;
@@ -499,7 +552,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
       }
 
       if (toUpload.length === 0) return;
-      await uploadFiles(toUpload, isPrivate);
+      await uploadFiles(toUpload, isPrivate, resolvedFolderId);
     };
     input.click();
   };
@@ -517,10 +570,25 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     if (res.ok) loadData();
   };
 
+  const handleArchiveFolder = async (folderId: number) => {
+    const res = await apiFetch(`/api/folders/${folderId}/toggle_archive/`, { method: 'POST' });
+    if (res.ok) loadData();
+  };
+
   const handleMoveFolder = async (folderId: number, newParentId: number | null) => {
     const res = await apiFetch(`/api/folders/${folderId}/`, {
       method: 'PATCH',
       body: JSON.stringify({ parent: newParentId === null ? '' : newParentId }),
+    });
+    if (res.ok) loadData();
+  };
+
+  const handleRenameFolder = async (folderId: number, newName: string) => {
+    const name = newName.trim();
+    if (!name) return;
+    const res = await apiFetch(`/api/folders/${folderId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
     });
     if (res.ok) loadData();
   };
@@ -579,6 +647,50 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     if (res.ok) {
       const { is_favorited } = await res.json();
       setDocuments(prev => prev.map(d => d.id === docId ? { ...d, is_favorited } : d));
+    }
+  };
+
+  const handleToggleFolderFavorite = async (folderId: number) => {
+    const res = await apiFetch(`/api/folders/${folderId}/toggle_favorite/`, { method: 'POST' });
+    if (res.ok) {
+      const { is_favorited } = await res.json();
+
+      // Find the folder and all descendant folder IDs
+      const findFolder = (list: any[]): any => {
+        for (const f of list) {
+          if (f.id === folderId) return f;
+          const found = findFolder(f.children || []);
+          if (found) return found;
+        }
+        return null;
+      };
+      const targetFolder = findFolder(folders);
+      const allFolderIds = targetFolder ? [folderId, ...getDescendantIds(targetFolder)] : [folderId];
+
+      // Favorite/unfavorite all docs in those folders
+      const affectedDocIds = documents
+        .filter(d => d.folder != null && allFolderIds.includes(d.folder))
+        .map(d => d.id);
+
+      await Promise.all(
+        affectedDocIds
+          .filter(id => {
+            const doc = documents.find(d => d.id === id);
+            return doc && doc.is_favorited !== is_favorited;
+          })
+          .map(id => apiFetch(`/api/documents/${id}/toggle_favorite/`, { method: 'POST' }))
+      );
+
+      // Update local state
+      const updateTree = (list: any[]): any[] => list.map(f =>
+        f.id === folderId
+          ? { ...f, is_favorited }
+          : { ...f, children: updateTree(f.children || []) }
+      );
+      setFolders(prev => updateTree(prev));
+      setDocuments(prev => prev.map(d =>
+        allFolderIds.includes(d.folder) ? { ...d, is_favorited } : d
+      ));
     }
   };
 
@@ -769,6 +881,20 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     }
   };
 
+  const handleToggleCombinedFavorite = async (recordId: number) => {
+    const res = await apiFetch(`/api/combined-analyses/${recordId}/toggle_favorite/`, { method: 'POST' });
+    if (res.ok) {
+      const { is_favorited } = await res.json();
+      setFolders(prev => prev.map(f => ({
+        ...f,
+        combined_analyses: (f.combined_analyses || []).map((ca: any) =>
+          ca.id === recordId ? { ...ca, is_favorited } : ca
+        ),
+        children: updateCombinedFavoriteInChildren(f.children || [], recordId, is_favorited),
+      })));
+    }
+  };
+
   const handleDeleteCombinedAnalysis = async (recordId: number) => {
     const res = await apiFetch(`/api/combined-analyses/${recordId}/`, { method: 'DELETE' });
     if (res.ok || res.status === 204) {
@@ -784,8 +910,10 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     return doc[key] ?? '';
   };
 
+  const sevenDaysAgo = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 7); return d; }, []);
+
   const filteredDocs = useMemo(() => {
-    let docs = documents;
+    let docs = documents.filter(d => new Date(d.created_at) >= sevenDaysAgo);
     if (showFavoritesOnly) {
       docs = docs.filter(d => d.is_favorited);
     }
@@ -810,9 +938,23 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
         const vb = getSortValue(b, sortConfig.key);
         return sortConfig.direction === 'asc' ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
       });
+    } else {
+      docs = [...docs].sort((a: any, b: any) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
     }
     return docs;
-  }, [documents, searchQuery, sortConfig, showFavoritesOnly]);
+  }, [documents, searchQuery, sortConfig, showFavoritesOnly, sevenDaysAgo]);
+
+  const filteredFolders = useMemo(() => {
+    let result = folders.filter(f => new Date(f.created_at) >= sevenDaysAgo);
+    if (showFavoritesOnly) {
+      const isFavoritedInTree = (folder: any): boolean =>
+        folder.is_favorited || (folder.children || []).some(isFavoritedInTree);
+      result = result.filter(isFavoritedInTree);
+    }
+    return [...result].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }, [folders, showFavoritesOnly, sevenDaysAgo]);
 
   const docsByFolder = useMemo(() => {
     const map: Record<number | string, any[]> = { unassigned: [] };
@@ -827,6 +969,18 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     });
     return map;
   }, [filteredDocs, folders]);
+
+  const docsByArchivedFolder = useMemo(() => {
+    const map: Record<number, any[]> = {};
+    const allArchivedIds = getAllFolderIds(archivedFolders);
+    allArchivedIds.forEach(id => { map[id] = []; });
+    documents.forEach(d => {
+      if (d.folder && map[d.folder] !== undefined) {
+        map[d.folder].push(d);
+      }
+    });
+    return map;
+  }, [documents, archivedFolders]);
 
   const getFileIcon = (type: string) => {
     if (type === "pdf") return <FileText className="h-4 w-4 text-red-500" />;
@@ -847,7 +1001,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     expandedNotes, toggleNotesExpanded, handleSaveNote,
     userCredits: user?.credits ?? 0,
     selectedDocIds, toggleDocSelection,
-    expandedCombinedAnalyses, toggleCombinedExpanded, handleDeleteCombinedAnalysis,
+    expandedCombinedAnalyses, toggleCombinedExpanded, handleDeleteCombinedAnalysis, handleToggleCombinedFavorite,
     handleDraftEmail, isDraftingEmail, draftEmailDocId,
   };
 
@@ -859,12 +1013,23 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
     return count;
   };
 
+  const countDocsInArchivedTree = (folder: any): number => {
+    let count = (docsByArchivedFolder[folder.id] || []).length;
+    if (folder.children) {
+      folder.children.forEach((c: any) => { count += countDocsInArchivedTree(c); });
+    }
+    return count;
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-3xl font-display font-bold tracking-tight">{initialFavoritesOnly ? "Favorites" : "Documents"}</h2>
-          <p className="text-muted-foreground">{initialFavoritesOnly ? "Your starred documents." : "Manage, group, and analyze your files."}</p>
+          <p className="text-muted-foreground">
+            {initialFavoritesOnly ? "Your starred documents." : "Manage, group, and analyze your files."}
+            {!initialFavoritesOnly && <span className="ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium text-muted-foreground">Last 7 days</span>}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -900,6 +1065,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
             <TabsList>
               <TabsTrigger value="my-files" className="gap-2"><FileText className="h-4 w-4" />My Files</TabsTrigger>
               <TabsTrigger value="team-files" className="gap-2"><Users className="h-4 w-4" />Team Files</TabsTrigger>
+              <TabsTrigger value="archive" className="gap-2"><Archive className="h-4 w-4" />Archive</TabsTrigger>
             </TabsList>
           </Tabs>
           <Button variant={groupBy ? "secondary" : "outline"} size="sm" className="gap-2" onClick={() => setGroupBy(!groupBy)}>
@@ -908,10 +1074,28 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
           <Button variant={showFavoritesOnly ? "secondary" : "outline"} size="sm" className="gap-2" onClick={() => setShowFavoritesOnly(v => !v)}>
             <Star className={`h-4 w-4 ${showFavoritesOnly ? 'fill-yellow-400 text-yellow-400' : ''}`} />Favorites
           </Button>
-          <div className="flex items-center gap-2 border-l pl-4">
-            <Input placeholder="New Client Folder..." value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} className="h-8 w-40 text-xs" data-testid="input-new-folder" />
-            <Button size="sm" variant="outline" className="h-8" onClick={() => handleCreateGroup()} data-testid="button-create-folder"><Plus className="h-4 w-4" /></Button>
-          </div>
+          <Popover open={folderPopoverOpen} onOpenChange={setFolderPopoverOpen}>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="outline" className="h-8 gap-2" data-testid="button-create-folder">
+                <FolderPlus className="h-4 w-4" />New Client Folder
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 p-4 space-y-3" align="end">
+              <p className="text-sm font-medium">Create a new client folder</p>
+              <Input
+                placeholder="Folder name..."
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleCreateGroup()}
+                className="h-8 text-xs"
+                autoFocus
+                data-testid="input-new-folder"
+              />
+              <Button size="sm" className="w-full" onClick={() => handleCreateGroup()} disabled={!newGroupName.trim()}>
+                Create Folder
+              </Button>
+            </PopoverContent>
+          </Popover>
         </div>
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -956,6 +1140,63 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
         </div>
       )}
 
+      {activeTab === 'archive' && (
+        <Card className="overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[40px]"></TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Tags</TableHead>
+                <TableHead>Owner</TableHead>
+                <TableHead>Score</TableHead>
+                <TableHead>City</TableHead>
+                <TableHead>County</TableHead>
+                <TableHead>Folder</TableHead>
+                <TableHead>Date</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {archivedFolders.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">
+                    <Archive className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                    <p className="text-sm">No archived folders</p>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                archivedFolders.map(folder => (
+                  <FolderTreeSection
+                    key={folder.id}
+                    folder={folder}
+                    depth={0}
+                    docsByFolder={docsByArchivedFolder}
+                    collapsedGroups={collapsedGroups}
+                    toggleGroupCollapse={toggleGroupCollapse}
+                    addingSubfolderTo={null}
+                    setAddingSubfolderTo={() => {}}
+                    subfolderName=""
+                    setSubfolderName={() => {}}
+                    handleCreateGroup={() => {}}
+                    handleDeleteFolder={handleDeleteFolder}
+                    handleArchiveFolder={handleArchiveFolder}
+                    handleMoveFolder={handleMoveFolder}
+                    handleRenameFolder={handleRenameFolder}
+                    handleToggleFolderFavorite={handleToggleFolderFavorite}
+                    countDocsInTree={countDocsInArchivedTree}
+                    dragOverFolderId={null}
+                    showFavoritesOnly={false}
+                    isArchiveView={true}
+                    {...fileRowProps}
+                  />
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+      {activeTab !== 'archive' && (
       <DndContext sensors={sensors} collisionDetection={customCollisionDetection} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={() => { setActiveDragId(null); setDragOverFolderId(null); }}>
         <Card className="overflow-hidden">
           <Table>
@@ -975,14 +1216,17 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
                   {sortConfig?.key !== 'ai_analysis.county' && <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
                 </TableHead>
                 <TableHead>Folder</TableHead>
+                <TableHead className="cursor-pointer" onClick={() => handleSort('created_at')}>
+                  Date {sortConfig?.key === 'created_at' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
+                </TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {groupBy ? (
                 <>
-                  <SortableContext items={folders.map(f => `folder-${f.id}`)} strategy={verticalListSortingStrategy}>
-                    {folders.map(folder => (
+                  <SortableContext items={filteredFolders.map(f => `folder-${f.id}`)} strategy={verticalListSortingStrategy}>
+                    {filteredFolders.map(folder => (
                       <FolderTreeSection
                         key={folder.id}
                         folder={folder}
@@ -996,18 +1240,23 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
                         setSubfolderName={setSubfolderName}
                         handleCreateGroup={handleCreateGroup}
                         handleDeleteFolder={handleDeleteFolder}
+                        handleArchiveFolder={handleArchiveFolder}
                         handleMoveFolder={handleMoveFolder}
+                        handleRenameFolder={handleRenameFolder}
+                        handleToggleFolderFavorite={handleToggleFolderFavorite}
                         countDocsInTree={countDocsInTree}
                         dragOverFolderId={dragOverFolderId}
+                        showFavoritesOnly={showFavoritesOnly}
+                        isArchiveView={false}
                         {...fileRowProps}
                       />
                     ))}
                   </SortableContext>
-                  {(docsByFolder['unassigned'] || []).length > 0 && (
+                  {(docsByFolder['unassigned'] || []).length > 0 && !showFavoritesOnly && (
                     <>
                       <TableRow className="bg-muted/40 border-b-2">
                         <TableCell></TableCell>
-                        <TableCell colSpan={8} className="py-2">
+                        <TableCell colSpan={9} className="py-2">
                           <div className="flex items-center gap-2">
                             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => toggleGroupCollapse('unassigned')}>
                               {collapsedGroups.has('unassigned') ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -1063,6 +1312,7 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
           })() : null}
         </DragOverlay>
       </DndContext>
+      )}
 
       <Dialog open={showCreditsDialog} onOpenChange={setShowCreditsDialog}>
         <DialogContent className="sm:max-w-sm">
@@ -1117,7 +1367,10 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showUploadDialog} onOpenChange={setShowUploadDialog}>
+      <Dialog open={showUploadDialog} onOpenChange={(open) => {
+        setShowUploadDialog(open);
+        if (!open) { setUploadDestType('new'); setUploadDestFolderId(null); setUploadDestNewName(''); }
+      }}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Upload Files</DialogTitle>
@@ -1147,28 +1400,88 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => handleUpload(uploadPrivate, false)}
-                className="flex flex-col items-center gap-2 rounded-lg border p-4 text-center hover:bg-muted/50 transition-colors"
-              >
-                <UploadCloud className="h-6 w-6 text-primary" />
-                <div>
-                  <p className="text-sm font-medium">Choose Files</p>
-                  <p className="text-xs text-muted-foreground">Select individual files</p>
-                </div>
-              </button>
-              <button
-                onClick={() => handleUpload(uploadPrivate, true)}
-                className="flex flex-col items-center gap-2 rounded-lg border p-4 text-center hover:bg-muted/50 transition-colors"
-              >
-                <FolderOpen className="h-6 w-6 text-primary" />
-                <div>
-                  <p className="text-sm font-medium">Upload Folder</p>
-                  <p className="text-xs text-muted-foreground">Select an entire folder</p>
-                </div>
-              </button>
+
+            {/* Folder destination */}
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Upload destination <span className="text-destructive">*</span></p>
+              <div className="flex gap-1">
+                {(['new', 'existing'] as const).map(type => (
+                  <button
+                    key={type}
+                    onClick={() => { setUploadDestType(type); setUploadDestFolderId(null); setUploadDestNewName(''); }}
+                    className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${uploadDestType === type ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted/50'}`}
+                  >
+                    {type === 'new' ? 'New folder' : 'Existing folder'}
+                  </button>
+                ))}
+              </div>
+              {uploadDestType === 'existing' && (
+                <Select value={uploadDestFolderId?.toString() ?? ''} onValueChange={v => setUploadDestFolderId(Number(v))}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Select a folder..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {flatFolders.map(f => (
+                      <SelectItem key={f.id} value={f.id.toString()}>
+                        <span style={{ paddingLeft: f.depth * 12 }}>{f.depth > 0 ? '└ ' : ''}{f.name}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {uploadDestType === 'new' && (() => {
+                const trimmed = uploadDestNewName.trim().toLowerCase();
+                const existing = trimmed ? flatFolders.find(f => f.name.toLowerCase() === trimmed) : null;
+                return (
+                  <div className="space-y-1.5">
+                    <Input
+                      placeholder="New folder name..."
+                      value={uploadDestNewName}
+                      onChange={e => setUploadDestNewName(e.target.value)}
+                      className="h-8 text-xs"
+                      autoFocus
+                    />
+                    {existing && (
+                      <p className="text-xs text-amber-600 flex items-center gap-1">
+                        <FolderOpen className="h-3 w-3 shrink-0" />
+                        Folder "{existing.name}" already exists — files will be added to it instead.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
+
+            {(() => {
+              const folderReady = (uploadDestType === 'existing' && uploadDestFolderId != null) ||
+                (uploadDestType === 'new' && uploadDestNewName.trim().length > 0);
+              return (
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => handleUpload(uploadPrivate, false)}
+                    disabled={!folderReady}
+                    className={`flex flex-col items-center gap-2 rounded-lg border p-4 text-center transition-colors ${folderReady ? 'hover:bg-muted/50' : 'opacity-40 cursor-not-allowed'}`}
+                  >
+                    <UploadCloud className={`h-6 w-6 ${folderReady ? 'text-primary' : 'text-muted-foreground'}`} />
+                    <div>
+                      <p className="text-sm font-medium">Choose Files</p>
+                      <p className="text-xs text-muted-foreground">Select individual files</p>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => handleUpload(uploadPrivate, true)}
+                    disabled={!folderReady}
+                    className={`flex flex-col items-center gap-2 rounded-lg border p-4 text-center transition-colors ${folderReady ? 'hover:bg-muted/50' : 'opacity-40 cursor-not-allowed'}`}
+                  >
+                    <FolderOpen className={`h-6 w-6 ${folderReady ? 'text-primary' : 'text-muted-foreground'}`} />
+                    <div>
+                      <p className="text-sm font-medium">Upload Folder</p>
+                      <p className="text-xs text-muted-foreground">Select an entire folder</p>
+                    </div>
+                  </button>
+                </div>
+              );
+            })()}
           </div>
           <DialogFooter>
             <Button variant="outline" className="w-full" onClick={() => setShowUploadDialog(false)}>Cancel</Button>
@@ -1179,12 +1492,17 @@ export default function DashboardPage({ initialFavoritesOnly = false }: { initia
   );
 }
 
-function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggleGroupCollapse, addingSubfolderTo, setAddingSubfolderTo, subfolderName, setSubfolderName, handleCreateGroup, handleDeleteFolder, handleMoveFolder, countDocsInTree, dragOverFolderId, ...fileRowProps }: any) {
+function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggleGroupCollapse, addingSubfolderTo, setAddingSubfolderTo, subfolderName, setSubfolderName, handleCreateGroup, handleDeleteFolder, handleArchiveFolder, handleMoveFolder, handleRenameFolder, handleToggleFolderFavorite, countDocsInTree, dragOverFolderId, showFavoritesOnly, isArchiveView, ...fileRowProps }: any) {
+  const [isRenaming, setIsRenaming] = React.useState(false);
+  const [renameValue, setRenameValue] = React.useState('');
   const { flatFolders } = fileRowProps;
   const collapseKey = `folder-${folder.id}`;
   const isCollapsed = collapsedGroups.has(collapseKey);
   const docs = docsByFolder[folder.id] || [];
-  const children = folder.children || [];
+  const isFavoritedInTree = (f: any): boolean => f.is_favorited || (f.children || []).some(isFavoritedInTree);
+  const children = showFavoritesOnly
+    ? (folder.children || []).filter(isFavoritedInTree)
+    : (folder.children || []);
   const totalDocs = countDocsInTree(folder);
   const isAddingSub = addingSubfolderTo === folder.id;
 
@@ -1222,19 +1540,42 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
             </div>
           )}
         </TableCell>
-        <TableCell colSpan={8} className="py-2">
+        <TableCell colSpan={9} className="py-2">
           <div className="flex items-center gap-2" style={{ paddingLeft: depth * 24 }}>
             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => toggleGroupCollapse(collapseKey)}>
               {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </Button>
             {folderIcon}
-            <span className={cn("font-bold text-xs uppercase tracking-tight", depth === 0 && "text-sm")}>{folder.name}</span>
+            {isRenaming ? (
+              <Input
+                value={renameValue}
+                onChange={e => setRenameValue(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { handleRenameFolder(folder.id, renameValue); setIsRenaming(false); }
+                  if (e.key === 'Escape') setIsRenaming(false);
+                }}
+                onBlur={() => { if (renameValue.trim()) handleRenameFolder(folder.id, renameValue); setIsRenaming(false); }}
+                className="h-6 w-40 text-xs font-bold"
+                autoFocus
+              />
+            ) : (
+              <span className={cn("font-bold text-xs uppercase tracking-tight", depth === 0 && "text-sm")}>{folder.name}</span>
+            )}
             <Badge variant="outline" className="text-[10px] h-4">{totalDocs}</Badge>
             {isDragTarget && (
               <Badge variant="default" className="text-[10px] h-5 px-2 bg-primary animate-pulse">
                 → {folder.full_path}
               </Badge>
             )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 opacity-50 hover:opacity-100"
+              onClick={() => handleToggleFolderFavorite(folder.id)}
+              title={folder.is_favorited ? 'Unfavorite' : 'Favorite'}
+            >
+              <Star className={`h-3.5 w-3.5 ${folder.is_favorited ? 'fill-yellow-400 text-yellow-400' : ''}`} />
+            </Button>
             {depth < 2 && (
               <Button
                 variant="ghost"
@@ -1274,6 +1615,17 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />
+                {!isArchiveView && (
+                  <DropdownMenuItem onClick={() => { setRenameValue(folder.name); setIsRenaming(true); }}>
+                    <Pencil className="mr-2 h-3.5 w-3.5" />Rename folder
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onClick={() => handleArchiveFolder(folder.id)}>
+                  {isArchiveView
+                    ? <><ArchiveRestore className="mr-2 h-3.5 w-3.5" />Unarchive folder</>
+                    : <><Archive className="mr-2 h-3.5 w-3.5" />Archive folder</>
+                  }
+                </DropdownMenuItem>
                 <DropdownMenuItem className="text-destructive" onClick={() => handleDeleteFolder(folder.id)}>
                   <Trash2 className="mr-2 h-3.5 w-3.5" />Delete folder
                 </DropdownMenuItem>
@@ -1317,9 +1669,14 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
               setSubfolderName={setSubfolderName}
               handleCreateGroup={handleCreateGroup}
               handleDeleteFolder={handleDeleteFolder}
+              handleArchiveFolder={handleArchiveFolder}
               handleMoveFolder={handleMoveFolder}
+              handleRenameFolder={handleRenameFolder}
+              handleToggleFolderFavorite={handleToggleFolderFavorite}
               countDocsInTree={countDocsInTree}
               dragOverFolderId={dragOverFolderId}
+              showFavoritesOnly={showFavoritesOnly}
+              isArchiveView={isArchiveView}
               {...fileRowProps}
             />
           ))}
@@ -1330,6 +1687,7 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
               expandedCombinedAnalyses={fileRowProps.expandedCombinedAnalyses}
               toggleCombinedExpanded={fileRowProps.toggleCombinedExpanded}
               handleDeleteCombinedAnalysis={fileRowProps.handleDeleteCombinedAnalysis}
+              handleToggleCombinedFavorite={fileRowProps.handleToggleCombinedFavorite}
             />
           ))}
           {docs.map((file: any) => (
@@ -1341,7 +1699,7 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
   );
 }
 
-function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedExpanded, handleDeleteCombinedAnalysis }: any) {
+function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedExpanded, handleDeleteCombinedAnalysis, handleToggleCombinedFavorite }: any) {
   const isExpanded = expandedCombinedAnalyses?.has(record.id);
   const ca = record.combined_analysis || {};
   const address = [ca.addressNumber, ca.streetName, ca.suffix].filter(Boolean).join(' ');
@@ -1383,15 +1741,26 @@ function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedE
         <TableCell className="text-xs text-muted-foreground">{ca.inspection_date || '--'}</TableCell>
         <TableCell></TableCell>
         <TableCell className="text-right">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-destructive hover:text-destructive"
-            onClick={() => handleDeleteCombinedAnalysis(record.id)}
-            title="Delete combined analysis"
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => handleToggleCombinedFavorite(record.id)}
+              title={record.is_favorited ? 'Unfavorite' : 'Favorite'}
+            >
+              <Star className={`h-4 w-4 ${record.is_favorited ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground'}`} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-destructive hover:text-destructive"
+              onClick={() => handleDeleteCombinedAnalysis(record.id)}
+              title="Delete combined analysis"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
         </TableCell>
       </TableRow>
       {isExpanded && (
@@ -1399,11 +1768,6 @@ function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedE
           <TableCell colSpan={9} className="p-0">
             <div className="px-6 py-4 max-h-[500px] overflow-auto space-y-3">
               <AnalysisReport analysis={ca} />
-              {ca.conflict_notes && (
-                <div className="rounded-md border border-yellow-400/40 bg-yellow-500/10 px-4 py-3 text-xs text-yellow-700">
-                  <span className="font-semibold">Conflict notes: </span>{ca.conflict_notes}
-                </div>
-              )}
             </div>
           </TableCell>
         </TableRow>
@@ -1524,6 +1888,9 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+        </TableCell>
+        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+          {file.created_at ? new Date(file.created_at).toLocaleDateString() : '--'}
         </TableCell>
         <TableCell className="text-right">
           <div className="flex items-center justify-end gap-1">
@@ -1705,6 +2072,25 @@ function CopyButton({ getText, className = "" }: { getText: () => string; classN
   );
 }
 
+function isNearEndOfLife(endOfLifeText: string | undefined): boolean {
+  if (!endOfLifeText) return false;
+  const t = endOfLifeText.toLowerCase();
+  // Explicit negations — return false immediately
+  if (/not\s+near\s+end\s+of\s+life/.test(t)) return false;
+  if (/not\s+(at|past|reached|approaching)\s+end\s+of\s+life/.test(t)) return false;
+  // Only flag explicit end-of-life proximity phrases
+  if (/near\s+end\s+of\s+life/.test(t)) return true;
+  if (/approaching\s+end(\s+of\s+life)?/.test(t)) return true;
+  if (/past\s+(its\s+)?end\s+of\s+life/.test(t)) return true;
+  // Flag if the first year number mentioned is ≤ 5
+  const match = t.match(/(\d+)\s*(?:–|-|to)?\s*\d*\s*year/);
+  if (match) {
+    const low = parseInt(match[1], 10);
+    return low <= 5;
+  }
+  return false;
+}
+
 function InspectionSection({ title, data }: { title: string; data: any }) {
   if (!data) return null;
 
@@ -1733,15 +2119,56 @@ function InspectionSection({ title, data }: { title: string; data: any }) {
     );
   }
 
+  const nearEol = isNearEndOfLife(data.end_of_life);
+
+  // Pest Inspection: render Section 1 / Section 2 sub-objects if present
+  if (title === "Pest Inspection" && (data.section_1 || data.section_2)) {
+    return (
+      <div className="space-y-1.5 rounded-lg border p-3 bg-card" data-testid="section-pest-inspection">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-bold text-primary">{title}</h4>
+          <CopyButton getText={() => formatSectionAsText(title, data)} className="opacity-40 hover:opacity-100" />
+        </div>
+        {data.condition && <p className="text-xs"><span className="font-medium text-foreground">Condition:</span> <span className="text-muted-foreground">{data.condition}</span></p>}
+        {(['section_1', 'section_2'] as const).map(key => {
+          const section = data[key];
+          if (!section) return null;
+          const label = key === 'section_1' ? 'Section 1 — Active Infestation / Damage' : 'Section 2 — Conditions Likely to Lead to Infestation';
+          return (
+            <div key={key} className={`rounded-md border p-2.5 space-y-1.5 ${key === 'section_1' ? 'border-red-300/50 bg-red-500/5' : 'border-yellow-300/50 bg-yellow-500/5'}`}>
+              <p className={`text-xs font-semibold ${key === 'section_1' ? 'text-red-600' : 'text-yellow-700'}`}>{label}</p>
+              {section.findings && Array.isArray(section.findings) && section.findings.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-foreground">Findings:</p>
+                  <ul className="list-disc ml-4 space-y-0.5">
+                    {section.findings.map((f: string, i: number) => (
+                      <li key={i} className="text-xs text-muted-foreground">{f}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {section.recommendations && <p className="text-xs"><span className="font-medium text-foreground">Recommendations:</span> <span className="text-muted-foreground">{section.recommendations}</span></p>}
+              {section.estimated_cost && <p className="text-xs"><span className="font-medium text-foreground">Estimated Cost:</span> <span className="text-muted-foreground">{section.estimated_cost}</span></p>}
+            </div>
+          );
+        })}
+        {data.notes && <p className="text-xs"><span className="font-medium text-foreground">Notes:</span> <span className="text-muted-foreground">{data.notes}</span></p>}
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-1.5 rounded-lg border p-3 bg-card" data-testid={`section-${title.toLowerCase().replace(/\s+/g, '-')}`}>
+    <div className={cn("space-y-1.5 rounded-lg border p-3", nearEol ? "border-orange-400/60 bg-orange-500/5" : "bg-card")} data-testid={`section-${title.toLowerCase().replace(/\s+/g, '-')}`}>
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-bold text-primary">{title}</h4>
+        <div className="flex items-center gap-1.5">
+          <h4 className={cn("text-sm font-bold", nearEol ? "text-orange-600" : "text-primary")}>{title}</h4>
+          {nearEol && <span className="text-[10px] font-medium text-orange-600 bg-orange-500/10 border border-orange-400/30 rounded-full px-1.5 py-0.5">Near end of life</span>}
+        </div>
         <CopyButton getText={() => formatSectionAsText(title, data)} className="opacity-40 hover:opacity-100" />
       </div>
       {data.condition && <p className="text-xs"><span className="font-medium text-foreground">Condition:</span> <span className="text-muted-foreground">{data.condition}</span></p>}
       {data.age && <p className="text-xs"><span className="font-medium text-foreground">Age:</span> <span className="text-muted-foreground">{data.age}</span></p>}
-      {data.end_of_life && <p className="text-xs"><span className="font-medium text-foreground">End of Life:</span> <span className="text-muted-foreground">{data.end_of_life}</span></p>}
+      {data.end_of_life && <p className="text-xs"><span className="font-medium text-foreground">End of Life:</span> <span className={nearEol ? "text-orange-600 font-medium" : "text-muted-foreground"}>{data.end_of_life}</span></p>}
       {data.issues && Array.isArray(data.issues) && data.issues.length > 0 && (
         <div>
           <p className="text-xs font-medium text-foreground">Issues:</p>
@@ -1921,7 +2348,12 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, o
 
       <div className="space-y-3">
         <h3 className="text-sm font-bold">Inspection Summary</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {analysis.conflict_notes && (
+          <div className="rounded-md border border-yellow-400/40 bg-yellow-500/10 px-4 py-3 text-xs text-yellow-700">
+            <span className="font-semibold">Conflict notes: </span>{analysis.conflict_notes}
+          </div>
+        )}
+        <div className="grid grid-cols-1 gap-3">
           {mainSections.map(section => summary[section] && (
             <InspectionSection key={section} title={section} data={summary[section]} />
           ))}
