@@ -204,7 +204,14 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
       apiFetch('/api/documents/shared_with_me/'),
     ]);
     if (docsRes.ok) setDocuments(await docsRes.json());
-    if (foldersRes.ok) setFolders(await foldersRes.json());
+    if (foldersRes.ok) {
+      const loadedFolders = await foldersRes.json();
+      setFolders(loadedFolders);
+      setCollapsedGroups(new Set([
+        ...getAllFolderIds(loadedFolders).map((id: number) => `folder-${id}`),
+        'unassigned',
+      ]));
+    }
     if (archivedRes.ok) setArchivedFolders(await archivedRes.json());
     if (sharedRes.ok) setSharedDocs(await sharedRes.json());
   };
@@ -1034,6 +1041,23 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
     return count;
   };
 
+  const getDocIdsInTree = (folder: any): number[] => {
+    const ids = (docsByFolder[folder.id] || []).map((d: any) => d.id);
+    if (folder.children) folder.children.forEach((c: any) => ids.push(...getDocIdsInTree(c)));
+    return ids;
+  };
+
+  const selectAllInFolder = (folder: any) => {
+    const ids = getDocIdsInTree(folder);
+    setSelectedDocIds(prev => {
+      const next = new Set(prev);
+      const allSelected = ids.length > 0 && ids.every(id => next.has(id));
+      if (allSelected) ids.forEach(id => next.delete(id));
+      else ids.forEach(id => next.add(id));
+      return next;
+    });
+  };
+
   const countDocsInArchivedTree = (folder: any): number => {
     let count = (docsByArchivedFolder[folder.id] || []).length;
     if (folder.children) {
@@ -1315,6 +1339,7 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
                         handleRenameFolder={handleRenameFolder}
                         handleToggleFolderFavorite={handleToggleFolderFavorite}
                         countDocsInTree={countDocsInTree}
+                        selectAllInFolder={selectAllInFolder}
                         dragOverFolderId={dragOverFolderId}
                         showFavoritesOnly={showFavoritesOnly}
                         isArchiveView={false}
@@ -1606,10 +1631,10 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
   );
 }
 
-function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggleGroupCollapse, addingSubfolderTo, setAddingSubfolderTo, subfolderName, setSubfolderName, handleCreateGroup, handleDeleteFolder, handleArchiveFolder, handleMoveFolder, handleRenameFolder, handleToggleFolderFavorite, countDocsInTree, dragOverFolderId, showFavoritesOnly, isArchiveView, ...fileRowProps }: any) {
+function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggleGroupCollapse, addingSubfolderTo, setAddingSubfolderTo, subfolderName, setSubfolderName, handleCreateGroup, handleDeleteFolder, handleArchiveFolder, handleMoveFolder, handleRenameFolder, handleToggleFolderFavorite, countDocsInTree, selectAllInFolder, dragOverFolderId, showFavoritesOnly, isArchiveView, ...fileRowProps }: any) {
   const [isRenaming, setIsRenaming] = React.useState(false);
   const [renameValue, setRenameValue] = React.useState('');
-  const { flatFolders } = fileRowProps;
+  const { flatFolders, selectedDocIds } = fileRowProps;
   const collapseKey = `folder-${folder.id}`;
   const isCollapsed = collapsedGroups.has(collapseKey);
   const docs = docsByFolder[folder.id] || [];
@@ -1619,6 +1644,15 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
     : (folder.children || []);
   const totalDocs = countDocsInTree(folder);
   const isAddingSub = addingSubfolderTo === folder.id;
+
+  const getAllIdsInTree = (f: any): number[] => {
+    const ids = (docsByFolder[f.id] || []).map((d: any) => d.id);
+    if (f.children) f.children.forEach((c: any) => ids.push(...getAllIdsInTree(c)));
+    return ids;
+  };
+  const allIdsInFolder = getAllIdsInTree(folder);
+  const allSelected = allIdsInFolder.length > 0 && allIdsInFolder.every(id => selectedDocIds?.has(id));
+  const someSelected = !allSelected && allIdsInFolder.some(id => selectedDocIds?.has(id));
 
   const isRoot = depth === 0;
   const { attributes, listeners, setNodeRef: setSortableRef, transform, transition } = useSortable({ id: `folder-${folder.id}`, disabled: !isRoot });
@@ -1648,11 +1682,23 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
     <React.Fragment>
       <TableRow ref={combinedRef} style={style} className={cn(bgColor, "border-b-2", isDragTarget && "ring-2 ring-primary ring-inset bg-primary/10 transition-all duration-150")}>
         <TableCell>
-          {isRoot && (
-            <div {...attributes} {...listeners} className="cursor-grab p-1 hover:bg-muted rounded">
-              <GripVertical className="h-4 w-4 text-muted-foreground" />
-            </div>
-          )}
+          <div className="flex items-center gap-1">
+            {!isArchiveView && allIdsInFolder.length > 0 && (
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 cursor-pointer"
+                checked={allSelected}
+                ref={el => { if (el) el.indeterminate = someSelected; }}
+                onChange={() => selectAllInFolder?.(folder)}
+                title="Select all files in folder"
+              />
+            )}
+            {isRoot && (
+              <div {...attributes} {...listeners} className="cursor-grab p-1 hover:bg-muted rounded">
+                <GripVertical className="h-4 w-4 text-muted-foreground" />
+              </div>
+            )}
+          </div>
         </TableCell>
         <TableCell colSpan={9} className="py-2">
           <div className="flex items-center gap-2" style={{ paddingLeft: depth * 24 }}>
@@ -1788,6 +1834,7 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
               handleRenameFolder={handleRenameFolder}
               handleToggleFolderFavorite={handleToggleFolderFavorite}
               countDocsInTree={countDocsInTree}
+              selectAllInFolder={selectAllInFolder}
               dragOverFolderId={dragOverFolderId}
               showFavoritesOnly={showFavoritesOnly}
               isArchiveView={isArchiveView}
