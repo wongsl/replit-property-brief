@@ -17,6 +17,7 @@ interface User {
 interface AuthContextType {
   user: User | null;
   loading: boolean;
+  serverError: boolean;
   logout: () => void;
   refreshUser: () => Promise<void>;
   rateLimitRemaining: number;
@@ -32,6 +33,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { getToken, signOut } = useClerkAuth();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [serverError, setServerError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   const [rateLimitRemaining, setRateLimitRemaining] = useState(MAX_REQUESTS);
   const { toast } = useToast();
 
@@ -47,6 +50,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Get a Clerk JWT and sync with the Django backend to establish a session.
     (async () => {
       setLoading(true);
+      setServerError(false);
       try {
         const token = await getToken();
         const res = await fetch('/api/auth/sync/', {
@@ -62,12 +66,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             username: clerkUser.username || clerkUser.primaryEmailAddress?.emailAddress?.split('@')[0],
           }),
         });
-        if (res.ok) setUser(await res.json());
+        if (res.ok) {
+          setUser(await res.json());
+          setServerError(false);
+        } else if (res.status >= 500 || res.status === 504) {
+          // Backend is down or starting up — don't redirect, retry after a delay
+          setServerError(true);
+          setTimeout(() => setRetryCount(c => c + 1), 4000);
+        }
+      } catch {
+        // Network error — backend unreachable
+        setServerError(true);
+        setTimeout(() => setRetryCount(c => c + 1), 4000);
       } finally {
         setLoading(false);
       }
     })();
-  }, [clerkUser?.id, clerkLoaded]);
+  }, [clerkUser?.id, clerkLoaded, retryCount]);
 
   const logout = () => {
     signOut();
@@ -97,7 +112,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, logout, refreshUser, rateLimitRemaining, decrementRateLimit, resetRateLimit }}>
+    <AuthContext.Provider value={{ user, loading, serverError, logout, refreshUser, rateLimitRemaining, decrementRateLimit, resetRateLimit }}>
       {children}
     </AuthContext.Provider>
   );

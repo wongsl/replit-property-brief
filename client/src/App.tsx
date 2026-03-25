@@ -14,26 +14,39 @@ import TeamsPage from "@/pages/teams-page";
 import AccountSettingsPage from "@/pages/account-settings-page";
 import SharedAnalysisPage from "@/pages/shared-analysis-page";
 
+function ServerStartingScreen() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-muted/40">
+      <div className="text-center space-y-4 p-8">
+        <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        <p className="text-lg font-medium">Server is starting up&hellip;</p>
+        <p className="text-sm text-muted-foreground">This usually takes 10&ndash;30 seconds. Hang tight.</p>
+      </div>
+    </div>
+  );
+}
+
 function ProtectedRoute({ component: Component, ...rest }: any) {
-  const { user, loading } = useAuth();
+  const { user, loading, serverError } = useAuth();
   
   if (loading) return <div className="flex min-h-screen items-center justify-center"><p className="text-muted-foreground">Loading...</p></div>;
+  if (serverError) return <ServerStartingScreen />;
   if (!user) return <Redirect to="/auth" />;
   
   return <Component {...rest} />;
 }
 
 function Router() {
-  const { user, loading } = useAuth();
+  const { user, loading, serverError } = useAuth();
 
   return (
     <Switch>
       <Route path="/auth">
-        {loading ? null : user ? <Redirect to="/dashboard" /> : <AuthPage />}
+        {loading ? null : serverError ? <ServerStartingScreen /> : user ? <Redirect to="/dashboard" /> : <AuthPage />}
       </Route>
       
       <Route path="/">
-        {loading ? null : user ? <Redirect to="/dashboard" /> : <Redirect to="/auth" />}
+        {loading ? null : serverError ? <ServerStartingScreen /> : user ? <Redirect to="/dashboard" /> : <Redirect to="/auth" />}
       </Route>
 
       <Route path="/dashboard">
