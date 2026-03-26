@@ -97,6 +97,7 @@ function buildSystemPrompt(): string {
     "- end_of_life: A summary of whether the component is near or at the end of its life. " +
     "- recommendation: A short note on monitoring, repair, or replacement advice. Given the location, city/county, give a cost estimate for the replacement or repairs. " +
     "If cost estimates are explicitly provided in the document for any section, always use those exact values and do not generate or infer new estimates. Only generate cost estimates when none are provided in the source document." +
+    "If end of life is mentioned, it is important to flag it." +
     "For Permits: condition (optional), notes, recommendations. " +
     "For Pest, structure the data with the following keys: " +
     "- condition: overall summary of the pest inspection. " +
@@ -611,7 +612,7 @@ export function registerAnalyzeRoutes(app: Express): void {
       const truncated = documentText.slice(0, 60000);
 
       log(`Extracted text length: ${documentText.length} chars (truncated to ${truncated.length})`, "analyze");
-      log(`---- FULL DOCUMENT TEXT SENT TO AI ----\n${truncated}\n---- END DOCUMENT TEXT ----`, "analyze");
+      // log(`---- FULL DOCUMENT TEXT SENT TO AI ----\n${truncated}\n---- END DOCUMENT TEXT ----`, "analyze");
 
       const completion = await getPerplexity().chat.completions.create({
         model: "sonar-pro",
@@ -627,7 +628,7 @@ export function registerAnalyzeRoutes(app: Express): void {
 
       const rawContent = completion.choices[0]?.message?.content || "";
 
-      log(`---- RAW AI RESPONSE ----\n${rawContent}\n---- END AI RESPONSE ----`, "analyze");
+      // log(`---- RAW AI RESPONSE ----\n${rawContent}\n---- END AI RESPONSE ----`, "analyze");
 
       let analysisJson: any;
       try {

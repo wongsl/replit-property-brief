@@ -2249,7 +2249,11 @@ function isNearEndOfLife(endOfLifeText: string | undefined): boolean {
   if (/near\s+end\s+of\s+life/.test(t)) return true;
   if (/approaching\s+end(\s+of\s+life)?/.test(t)) return true;
   if (/past\s+(its\s+)?end\s+of\s+life/.test(t)) return true;
-  // Flag if the first year number mentioned is ≤ 5
+  if (/reached\s+end(\s+of(\s+(useful\s+)?life)?)?/.test(t)) return true;
+  if (/end\s+of\s+(useful\s+)?life/.test(t)) return true;
+  // "Yes" or "Yes, ..." as the whole / start of value
+  if (/^yes\b/.test(t)) return true;
+  // Flag if the first year number mentioned is ≤ 5 (includes "0 years left")
   const match = t.match(/(\d+)\s*(?:–|-|to)?\s*\d*\s*year/);
   if (match) {
     const low = parseInt(match[1], 10);
