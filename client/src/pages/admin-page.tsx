@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Users, Activity, ShieldAlert, Settings, MoreVertical, Trash2, UserCog,
-  CheckCircle, XCircle, ShieldCheck, Coins, Plus, Minus, Files, ChevronDown, ChevronRight
+  CheckCircle, XCircle, ShieldCheck, Coins, Plus, Minus, Files, ChevronDown, ChevronRight, ChevronLeft, Search
 } from "lucide-react";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -63,6 +63,18 @@ export default function AdminPage() {
   const [docsLoading, setDocsLoading] = useState(false);
   const [collapsedTeams, setCollapsedTeams] = useState<Set<string>>(new Set());
   const [collapsedUsers, setCollapsedUsers] = useState<Set<string>>(new Set());
+  const [usersPage, setUsersPage] = useState(1);
+  const [userSearch, setUserSearch] = useState("");
+  const USERS_PER_PAGE = 10;
+
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter(u =>
+      u.username?.toLowerCase().includes(q) ||
+      String(u.id).includes(q)
+    );
+  }, [users, userSearch]);
 
   const loadAllDocuments = async () => {
     setDocsLoading(true);
@@ -359,8 +371,21 @@ export default function AdminPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>User Management</CardTitle>
-          <CardDescription>Manage roles, teams, permissions, and credits for all registered users.</CardDescription>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <CardTitle>User Management</CardTitle>
+              <CardDescription>Manage roles, teams, permissions, and credits for all registered users.</CardDescription>
+            </div>
+            <div className="relative w-64">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by username or ID..."
+                className="pl-9 h-9"
+                value={userSearch}
+                onChange={(e) => { setUserSearch(e.target.value); setUsersPage(1); }}
+              />
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           <Table>
@@ -377,7 +402,7 @@ export default function AdminPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users.map((u) => (
+              {filteredUsers.slice((usersPage - 1) * USERS_PER_PAGE, usersPage * USERS_PER_PAGE).map((u) => (
                 <TableRow key={u.id} data-testid={`row-user-${u.id}`}>
                   <TableCell className="font-medium">{u.username}</TableCell>
                   <TableCell className="text-muted-foreground text-sm">{u.email || <span className="italic">—</span>}</TableCell>
@@ -462,11 +487,31 @@ export default function AdminPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {users.length === 0 && (
-                <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">No users found</TableCell></TableRow>
+              {filteredUsers.length === 0 && (
+                <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">{userSearch ? "No users match your search." : "No users found."}</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
+          {filteredUsers.length > USERS_PER_PAGE && (
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-sm text-muted-foreground">
+                {(usersPage - 1) * USERS_PER_PAGE + 1}–{Math.min(usersPage * USERS_PER_PAGE, filteredUsers.length)} of {filteredUsers.length} users
+              </p>
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" onClick={() => setUsersPage(p => p - 1)} disabled={usersPage === 1}>
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                {Array.from({ length: Math.ceil(filteredUsers.length / USERS_PER_PAGE) }, (_, i) => i + 1).map(page => (
+                  <Button key={page} variant={page === usersPage ? "default" : "outline"} size="sm" className="w-8" onClick={() => setUsersPage(page)}>
+                    {page}
+                  </Button>
+                ))}
+                <Button variant="outline" size="sm" onClick={() => setUsersPage(p => p + 1)} disabled={usersPage === Math.ceil(filteredUsers.length / USERS_PER_PAGE)}>
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

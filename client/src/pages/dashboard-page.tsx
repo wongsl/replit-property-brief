@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useAuth } from "@/lib/mock-auth";
+import { usePrivacyMode, maskAnalysis } from "@/lib/privacy-mode";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -121,6 +122,7 @@ function updateCombinedFavoriteInChildren(children: any[], recordId: number, is_
 
 export default function DashboardPage({ initialFavoritesOnly = false, initialActiveTab }: { initialFavoritesOnly?: boolean; initialActiveTab?: string } = {}) {
   const { user, refreshUser, decrementRateLimit, rateLimitRemaining, resetRateLimit } = useAuth();
+  const { privacyMode } = usePrivacyMode();
   const { toast } = useToast();
   const [documents, setDocuments] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
@@ -144,7 +146,13 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
   const [folderPopoverOpen, setFolderPopoverOpen] = useState(false);
   const [editingFileId, setEditingFileId] = useState<number | null>(null);
   const [tempFileName, setTempFileName] = useState("");
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    try {
+      const saved = sessionStorage.getItem('dashboard_collapsed_groups');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch { return new Set(); }
+  });
+  const foldersInitialized = useRef(!!sessionStorage.getItem('dashboard_folders_initialized'));
   const [searchQuery, setSearchQuery] = useState("");
   const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
@@ -207,16 +215,31 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
     if (foldersRes.ok) {
       const loadedFolders = await foldersRes.json();
       setFolders(loadedFolders);
-      setCollapsedGroups(new Set([
-        ...getAllFolderIds(loadedFolders).map((id: number) => `folder-${id}`),
-        'unassigned',
-      ]));
     }
     if (archivedRes.ok) setArchivedFolders(await archivedRes.json());
     if (sharedRes.ok) setSharedDocs(await sharedRes.json());
   };
 
   useEffect(() => { loadData(); }, [activeTab]);
+
+  useEffect(() => {
+    if (folders.length > 0 && !foldersInitialized.current) {
+      foldersInitialized.current = true;
+      sessionStorage.setItem('dashboard_folders_initialized', 'true');
+      const initial = new Set([
+        ...getAllFolderIds(folders).map((id: number) => `folder-${id}`),
+        'unassigned',
+      ]);
+      setCollapsedGroups(initial);
+      sessionStorage.setItem('dashboard_collapsed_groups', JSON.stringify(Array.from(initial)));
+    }
+  }, [folders]);
+
+  useEffect(() => {
+    if (foldersInitialized.current) {
+      sessionStorage.setItem('dashboard_collapsed_groups', JSON.stringify(Array.from(collapsedGroups)));
+    }
+  }, [collapsedGroups]);
 
   useEffect(() => {
     apiFetch('/api/teams/').then(r => r.ok ? r.json() : []).then(setTeams).catch(() => {});
@@ -969,8 +992,8 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
         new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
     }
-    return docs;
-  }, [documents, archivedFolders, searchQuery, sortConfig, showFavoritesOnly]);
+    return docs.map(d => ({ ...d, ai_analysis: maskAnalysis(d.ai_analysis, privacyMode) }));
+  }, [documents, archivedFolders, searchQuery, sortConfig, showFavoritesOnly, privacyMode]);
 
   const filteredFolders = useMemo(() => {
     let result = [...folders];
@@ -1859,8 +1882,9 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
 }
 
 function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedExpanded, handleDeleteCombinedAnalysis, handleToggleCombinedFavorite }: any) {
+  const { privacyMode } = usePrivacyMode();
   const isExpanded = expandedCombinedAnalyses?.has(record.id);
-  const ca = record.combined_analysis || {};
+  const ca = maskAnalysis(record.combined_analysis || {}, privacyMode);
   const address = [ca.addressNumber, ca.streetName, ca.suffix].filter(Boolean).join(' ');
   const location = [address, ca.city, ca.zipcode].filter(Boolean).join(', ');
   const sources: any[] = ca.sources || record.source_document_names?.map((d: any) => ({ fileName: d.name })) || [];

@@ -1,5 +1,6 @@
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/mock-auth";
+import { usePrivacyMode } from "@/lib/privacy-mode";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -12,6 +13,8 @@ import {
   Star,
   Settings,
   Archive,
+  EyeOff,
+  Eye,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -72,6 +75,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 function AppSidebar() {
   const { user, logout } = useAuth();
   const [location] = useLocation();
+  const { privacyMode, togglePrivacyMode } = usePrivacyMode();
 
   const menuItems = [
     {
@@ -165,6 +169,12 @@ function AppSidebar() {
       </SidebarContent>
       <SidebarFooter className="border-t p-4">
         <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton onClick={togglePrivacyMode} className={privacyMode ? "text-orange-500 hover:text-orange-500 hover:bg-orange-500/10" : ""}>
+              {privacyMode ? <EyeOff /> : <Eye />}
+              <span>{privacyMode ? "Privacy Mode On" : "Privacy Mode"}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton onClick={logout} className="text-destructive hover:text-destructive hover:bg-destructive/10">
               <LogOut />

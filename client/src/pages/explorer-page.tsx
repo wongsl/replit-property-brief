@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useAuth } from "@/lib/mock-auth";
+import { usePrivacyMode, maskAnalysis } from "@/lib/privacy-mode";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +10,7 @@ import {
 } from "@/components/ui/table";
 import {
   FileText, FileImage, FileCode, FileIcon, Search, FolderOpen,
-  ChevronRight, ChevronDown, Sparkles, Users, User, ArrowUpDown,
+  ChevronRight, ChevronDown, ChevronLeft, Sparkles, Users, User, ArrowUpDown,
 } from "lucide-react";
 
 type AdminDoc = {
@@ -33,26 +34,64 @@ async function apiFetch(url: string) {
 
 export default function ExplorerPage() {
   const { user } = useAuth();
+  const { privacyMode } = usePrivacyMode();
   const [documents, setDocuments] = useState<any[]>([]);
-  const [folders, setFolders] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  // admin "All Files" view collapse state
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [collapsedUserGroups, setCollapsedUserGroups] = useState<Set<string>>(new Set());
+  // folder view: owner rows and folder-within-owner rows (both start collapsed)
+  const [collapsedOwnerGroups, setCollapsedOwnerGroups] = useState<Set<string>>(() => {
+    try {
+      const saved = sessionStorage.getItem('explorer_collapsed_owner_groups');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch { return new Set(); }
+  });
+  const [collapsedFolderGroups, setCollapsedFolderGroups] = useState<Set<string>>(() => {
+    try {
+      const saved = sessionStorage.getItem('explorer_collapsed_folder_groups');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch { return new Set(); }
+  });
+  const foldersInitialized = useRef(!!sessionStorage.getItem('explorer_folders_initialized'));
   const [viewMode, setViewMode] = useState<'folder' | 'all'>('folder');
   const [adminDocuments, setAdminDocuments] = useState<AdminDoc[] | null>(null);
   const [adminDocsLoading, setAdminDocsLoading] = useState(false);
-  const [collapsedUserGroups, setCollapsedUserGroups] = useState<Set<string>>(new Set());
   const [expandedAnalysis, setExpandedAnalysis] = useState<Set<number>>(new Set());
   const [sortConfig, setSortConfig] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
+  const [ownersPage, setOwnersPage] = useState(1);
+  const OWNERS_PER_PAGE = 5;
 
   useEffect(() => {
-    Promise.all([
-      apiFetch('/api/documents/?scope=team'),
-      apiFetch('/api/folders/'),
-    ]).then(async ([docsRes, foldersRes]) => {
-      if (docsRes.ok) setDocuments(await docsRes.json());
-      if (foldersRes.ok) setFolders(await foldersRes.json());
+    apiFetch('/api/documents/?scope=team').then(async (res) => {
+      if (res.ok) setDocuments(await res.json());
     });
   }, []);
+
+  useEffect(() => {
+    if (documents.length > 0 && !foldersInitialized.current) {
+      foldersInitialized.current = true;
+      sessionStorage.setItem('explorer_folders_initialized', 'true');
+      const initialOwners = new Set(documents.map((d: any) => d.owner_name || 'Unknown'));
+      setCollapsedOwnerGroups(initialOwners);
+      sessionStorage.setItem('explorer_collapsed_owner_groups', JSON.stringify(Array.from(initialOwners)));
+      const initialFolders = new Set(documents.map((d: any) => `${d.owner_name || 'Unknown'}::${d.folder_name || 'Unassigned'}`));
+      setCollapsedFolderGroups(initialFolders);
+      sessionStorage.setItem('explorer_collapsed_folder_groups', JSON.stringify(Array.from(initialFolders)));
+    }
+  }, [documents]);
+
+  useEffect(() => {
+    if (foldersInitialized.current) {
+      sessionStorage.setItem('explorer_collapsed_owner_groups', JSON.stringify(Array.from(collapsedOwnerGroups)));
+    }
+  }, [collapsedOwnerGroups]);
+
+  useEffect(() => {
+    if (foldersInitialized.current) {
+      sessionStorage.setItem('explorer_collapsed_folder_groups', JSON.stringify(Array.from(collapsedFolderGroups)));
+    }
+  }, [collapsedFolderGroups]);
 
   const handleSort = (key: string) => {
     setSortConfig(prev =>
@@ -86,6 +125,7 @@ export default function ExplorerPage() {
         const ai = d.ai_analysis;
         return (
           d.name.toLowerCase().includes(q) ||
+          d.owner_name?.toLowerCase().includes(q) ||
           d.folder_name?.toLowerCase().includes(q) ||
           d.tags?.some((t: any) => t.name.toLowerCase().includes(q)) ||
           ai?.city?.toLowerCase().includes(q) ||
@@ -105,20 +145,9 @@ export default function ExplorerPage() {
         return sortConfig.dir === 'asc' ? cmp : -cmp;
       });
     }
-    return docs;
-  }, [documents, searchQuery, sortConfig]);
+    return docs.map(d => ({ ...d, ai_analysis: maskAnalysis(d.ai_analysis, privacyMode) }));
+  }, [documents, searchQuery, sortConfig, privacyMode]);
 
-  const groupedDocs = useMemo(() => {
-    const grouped: Record<string, any[]> = {};
-    folders.forEach(f => { grouped[f.name] = []; });
-    grouped['Unassigned'] = [];
-    filteredDocs.forEach(d => {
-      const gName = d.folder_name || 'Unassigned';
-      if (!grouped[gName]) grouped[gName] = [];
-      grouped[gName].push(d);
-    });
-    return grouped;
-  }, [filteredDocs, folders]);
 
   const handleSwitchToAll = async () => {
     setViewMode('all');
@@ -169,6 +198,34 @@ export default function ExplorerPage() {
       return next;
     });
   };
+
+  const toggleOwnerGroup = (key: string) => {
+    setCollapsedOwnerGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleFolderGroup = (key: string) => {
+    setCollapsedFolderGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const ownerFolderGroups = useMemo(() => {
+    const result: Record<string, Record<string, any[]>> = {};
+    filteredDocs.forEach(d => {
+      const owner = d.owner_name || 'Unknown';
+      const folder = d.folder_name || 'Unassigned';
+      if (!result[owner]) result[owner] = {};
+      if (!result[owner][folder]) result[owner][folder] = [];
+      result[owner][folder].push(d);
+    });
+    return result;
+  }, [filteredDocs]);
 
   const getFileIcon = (type: string) => {
     if (type === "pdf") return <FileText className="h-4 w-4 text-red-500" />;
@@ -336,7 +393,7 @@ export default function ExplorerPage() {
               placeholder="Search files, folders, tags, city, county..."
               className="pl-9 bg-card"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => { setSearchQuery(e.target.value); setOwnersPage(1); }}
               data-testid="input-explorer-search"
             />
           </div>
@@ -410,36 +467,95 @@ export default function ExplorerPage() {
             </Table>
           )
         ) : (
+          <>
           <Table>
             {tableHeader}
             <TableBody>
-              {Object.keys(groupedDocs).every(g => groupedDocs[g].length === 0) ? emptyState : (
-                Object.entries(groupedDocs).map(([group, files]) => {
-                  const isCollapsed = collapsedGroups.has(group);
+              {Object.keys(ownerFolderGroups).length === 0 ? emptyState : (() => {
+                const sortedOwners = Object.keys(ownerFolderGroups).sort((a, b) => {
+                  if (a === user?.username) return -1;
+                  if (b === user?.username) return 1;
+                  return a.localeCompare(b);
+                });
+                const pagedOwners = sortedOwners.slice((ownersPage - 1) * OWNERS_PER_PAGE, ownersPage * OWNERS_PER_PAGE);
+                return pagedOwners.map(ownerName => {
+                  const ownerCollapsed = collapsedOwnerGroups.has(ownerName);
+                  const folderMap = ownerFolderGroups[ownerName];
+                  const ownerTotal = Object.values(folderMap).reduce((n, files) => n + files.length, 0);
+                  const folderNames = Object.keys(folderMap).sort((a, b) => {
+                    if (a === 'Unassigned') return 1;
+                    if (b === 'Unassigned') return -1;
+                    return a.localeCompare(b);
+                  });
                   return (
-                    <React.Fragment key={group}>
+                    <React.Fragment key={ownerName}>
                       <TableRow
                         className="bg-muted/20 hover:bg-muted/30 cursor-pointer"
-                        onClick={() => toggleGroup(group)}
+                        onClick={() => toggleOwnerGroup(ownerName)}
                       >
                         <TableCell colSpan={7}>
                           <div className="flex items-center gap-2">
-                            {isCollapsed
+                            {ownerCollapsed
                               ? <ChevronRight className="h-4 w-4 text-muted-foreground" />
                               : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-                            <FolderOpen className="h-4 w-4 text-primary" />
-                            <span className="font-bold uppercase tracking-wider text-sm">{group}</span>
-                            <Badge variant="secondary" className="ml-1">{files.length}</Badge>
+                            <User className="h-4 w-4 text-primary" />
+                            <span className="font-bold text-sm">{ownerName}</span>
+                            <Badge variant="secondary" className="ml-1">{ownerTotal}</Badge>
                           </div>
                         </TableCell>
                       </TableRow>
-                      {!isCollapsed && files.map(renderFileRow)}
+                      {!ownerCollapsed && folderNames.map(folderName => {
+                        const folderKey = `${ownerName}::${folderName}`;
+                        const folderCollapsed = collapsedFolderGroups.has(folderKey);
+                        const folderFiles = folderMap[folderName];
+                        return (
+                          <React.Fragment key={folderKey}>
+                            <TableRow
+                              className="bg-muted/10 hover:bg-muted/20 cursor-pointer"
+                              onClick={() => toggleFolderGroup(folderKey)}
+                            >
+                              <TableCell colSpan={7} className="pl-8">
+                                <div className="flex items-center gap-2">
+                                  {folderCollapsed
+                                    ? <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                                    : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
+                                  <FolderOpen className="h-3.5 w-3.5 text-primary" />
+                                  <span className="font-bold uppercase tracking-wider text-sm">{folderName}</span>
+                                  <Badge variant="secondary" className="ml-1">{folderFiles.length}</Badge>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                            {!folderCollapsed && folderFiles.map(renderFileRow)}
+                          </React.Fragment>
+                        );
+                      })}
                     </React.Fragment>
                   );
-                })
-              )}
+                });
+              })()}
             </TableBody>
           </Table>
+          {Object.keys(ownerFolderGroups).length > OWNERS_PER_PAGE && (
+            <div className="flex items-center justify-between p-4 border-t">
+              <p className="text-sm text-muted-foreground">
+                {(ownersPage - 1) * OWNERS_PER_PAGE + 1}–{Math.min(ownersPage * OWNERS_PER_PAGE, Object.keys(ownerFolderGroups).length)} of {Object.keys(ownerFolderGroups).length} owners
+              </p>
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" onClick={() => setOwnersPage(p => p - 1)} disabled={ownersPage === 1}>
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                {Array.from({ length: Math.ceil(Object.keys(ownerFolderGroups).length / OWNERS_PER_PAGE) }, (_, i) => i + 1).map(page => (
+                  <Button key={page} variant={page === ownersPage ? "default" : "outline"} size="sm" className="w-8" onClick={() => setOwnersPage(page)}>
+                    {page}
+                  </Button>
+                ))}
+                <Button variant="outline" size="sm" onClick={() => setOwnersPage(p => p + 1)} disabled={ownersPage === Math.ceil(Object.keys(ownerFolderGroups).length / OWNERS_PER_PAGE)}>
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+          </>
         )}
       </Card>
     </div>
