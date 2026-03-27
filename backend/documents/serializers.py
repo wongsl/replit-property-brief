@@ -72,10 +72,7 @@ class FolderSerializer(serializers.ModelSerializer):
         read_only_fields = ['owner']
 
     def get_children(self, obj):
-        if hasattr(obj, '_prefetched_children'):
-            children = obj._prefetched_children
-        else:
-            children = obj.children.all()
+        children = obj.children.filter(is_archived=False)
         return FolderSerializer(children, many=True, context=self.context).data
 
     def get_is_favorited(self, obj):

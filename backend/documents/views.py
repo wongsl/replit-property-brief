@@ -274,7 +274,7 @@ class FolderViewSet(viewsets.ModelViewSet):
         if self.action == 'list':
             archived = self.request.query_params.get('archived', None)
             if archived == 'true':
-                qs = qs.filter(is_archived=True, parent__isnull=True)
+                qs = qs.filter(is_archived=True)
             else:
                 qs = qs.filter(is_archived=False)
                 show_all = self.request.query_params.get('all', None)

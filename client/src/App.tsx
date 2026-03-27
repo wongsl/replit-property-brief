@@ -12,6 +12,7 @@ import ExplorerPage from "@/pages/explorer-page";
 import AdminPage from "@/pages/admin-page";
 import TeamsPage from "@/pages/teams-page";
 import AccountSettingsPage from "@/pages/account-settings-page";
+import TutorialPage from "@/pages/tutorial-page";
 import SharedAnalysisPage from "@/pages/shared-analysis-page";
 
 function ServerStartingScreen() {
@@ -88,6 +89,12 @@ function Router() {
       <Route path="/settings">
         <AppLayout>
           <ProtectedRoute component={AccountSettingsPage} />
+        </AppLayout>
+      </Route>
+
+      <Route path="/tutorial">
+        <AppLayout>
+          <ProtectedRoute component={TutorialPage} />
         </AppLayout>
       </Route>
 
