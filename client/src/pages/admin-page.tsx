@@ -321,17 +321,21 @@ export default function AdminPage() {
         </Card>
       )}
 
-      {creditRequests.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Coins className="h-5 w-5" />
-              Credit Requests
-              <Badge className="ml-1 h-5 px-1.5 text-xs">{creditRequests.length}</Badge>
-            </CardTitle>
-            <CardDescription>Users requesting additional analysis credits.</CardDescription>
-          </CardHeader>
-          <CardContent>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Coins className="h-5 w-5" />
+            Credit Requests
+            {creditRequests.length > 0 && (
+              <Badge className="ml-1 h-5 px-1.5 text-xs bg-destructive text-white">{creditRequests.length}</Badge>
+            )}
+          </CardTitle>
+          <CardDescription>Users requesting additional analysis credits.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {creditRequests.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-4 text-center">No pending credit requests.</p>
+          ) : (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -365,9 +369,9 @@ export default function AdminPage() {
                 ))}
               </TableBody>
             </Table>
-          </CardContent>
-        </Card>
-      )}
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

@@ -99,6 +99,20 @@ function AppSidebar() {
   const { privacyMode, togglePrivacyMode } = usePrivacyMode();
   const { open, setOpen } = useSidebar();
   const [showTutorialPrompt, setShowTutorialPrompt] = useState(false);
+  const [creditRequestCount, setCreditRequestCount] = useState(0);
+
+  useEffect(() => {
+    if (user?.role !== 'admin') return;
+    const fetchCount = () => {
+      fetch('/api/admin/credit-requests/', { credentials: 'include' })
+        .then(res => res.ok ? res.json() : [])
+        .then((data: any[]) => setCreditRequestCount(Array.isArray(data) ? data.length : 0))
+        .catch(() => {});
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 60000);
+    return () => clearInterval(interval);
+  }, [user?.role]);
 
   const handleMouseEnter = () => {
     if (!open) {
@@ -174,8 +188,8 @@ function AppSidebar() {
 
   return (
     <Sidebar collapsible="icon" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
-      <SidebarHeader className="border-b p-2">
-        <div className="flex items-center gap-2 font-display font-bold text-xl p-1">
+      <SidebarHeader className="border-b !h-16 justify-center">
+        <div className="flex items-center gap-2 font-display font-bold text-xl pl-2 group-data-[collapsible=icon]:pl-0">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Database className="h-4 w-4" />
           </div>
@@ -189,20 +203,30 @@ function AppSidebar() {
           <SidebarGroupLabel>Platform</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {filteredItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton 
-                    asChild 
-                    isActive={location === item.url}
-                    tooltip={item.title}
-                  >
-                    <Link href={item.url}>
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+              {filteredItems.map((item) => {
+                const showBadge = item.title === "Admin Panel" && creditRequestCount > 0;
+                return (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={location === item.url}
+                      tooltip={item.title}
+                    >
+                      <Link href={item.url}>
+                        <div className="relative shrink-0">
+                          <item.icon className="size-4 shrink-0" />
+                          {showBadge && (
+                            <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-white leading-none">
+                              {creditRequestCount > 9 ? "9+" : creditRequestCount}
+                            </span>
+                          )}
+                        </div>
+                        <span>{item.title}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
