@@ -31,6 +31,9 @@ urlpatterns = [
     path('credits/', views.my_credits),
     path('credits/request/', views.credit_request),
     path('credits/request/cancel/', views.credit_request_cancel),
+    path('credits/packages/', views.credit_packages),
+    path('credits/checkout/', views.create_checkout_session),
+    path('stripe/webhook/', views.stripe_webhook),
     path('share/<uuid:token>/', views.share_view),
     path('', include(router.urls)),
 ]

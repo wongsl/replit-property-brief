@@ -81,6 +81,10 @@ const DOC_TYPES = [
   "Other",
 ];
 
+const SINGLE_CALL_LIMIT = 120_000;
+const CHUNK_SIZE = 100_000;
+const CHUNK_OVERLAP = 2_000;
+
 function buildSystemPrompt(): string {
   const docTypes = DOC_TYPES.join(", ");
   return (
@@ -111,6 +115,56 @@ function buildSystemPrompt(): string {
     "Do not include any commentary, markdown, or explanations — respond with a JSON object only. " +
     "Ensure the json is properly formatted and valid. " +
     "Ensure that the JSON falls within the maximum token limit of 4000 tokens."
+  );
+}
+
+function buildMapSystemPrompt(): string {
+  const docTypes = DOC_TYPES.join(", ");
+  return (
+    "You are an expert extractor for real estate inspection reports. " +
+    "You will receive an excerpt from a larger document — extract only what is visible in this portion. " +
+    "Your only response should be a valid JSON object with the following top-level keys: " +
+    "fileName, summary, addressNumber, streetName, suffix, city, county, zipcode, document_type, and inspection_date. " +
+    `The value for \`document_type\` must be one of the following: ${docTypes}. ` +
+    "The value for `inspection_date` must be the date the inspection was performed, formatted YYYY-MM-DD. Use null if not found in this excerpt. " +
+    "For any field you cannot determine from this excerpt alone, use null. " +
+    "The value for `summary` must be a nested JSON object with the following keys: Roof, Electrical, Plumbing, Permits, Foundation, Pest Inspection, HVAC, and Additional Notes. " +
+    "Each of the categories Roof, Electrical, Plumbing, Foundation, HVAC should contain: " +
+    "- condition: A short description of current working condition. " +
+    "- issues: A list of any notable concerns, maintenance, or repair items visible in this excerpt. " +
+    "- age: A text string describing the known or estimated age (if available). " +
+    "- end_of_life: A summary of whether the component is near or at the end of its life. " +
+    "- recommendation: A short note on monitoring, repair, or replacement advice. Only include cost estimates if explicitly stated in this excerpt. " +
+    "For Permits: condition (optional), notes, recommendations. " +
+    "For Pest, structure the data with the following keys: " +
+    "- condition: overall summary of the pest inspection. " +
+    "- section_1: an object for Section 1 findings, containing: findings (array of strings), recommendations (string), estimated_cost (string). " +
+    "- section_2: an object for Section 2 findings, containing: findings (array of strings), recommendations (string), estimated_cost (string). " +
+    "- notes: any general notes not specific to Section 1 or Section 2. " +
+    "If no Section 1 or Section 2 findings exist in this excerpt, omit those keys. " +
+    "For Additional Notes, structure as a nested dictionary with keys like Kitchen, Bathroom, Windows, etc., and their respective findings. " +
+    "If an entire section is not mentioned in this excerpt, omit it. " +
+    "Do not include any commentary, markdown, or explanations — respond with a JSON object only. " +
+    "Ensure the JSON is properly formatted and valid."
+  );
+}
+
+function buildReduceSystemPrompt(): string {
+  return (
+    "You are merging multiple partial analyses of the same inspection document into a single unified analysis. " +
+    "You will receive a JSON array of partial results, each extracted from a different portion of the same document. " +
+    "Merge them into one final JSON object with the following top-level keys: " +
+    "fileName, summary, addressNumber, streetName, suffix, city, county, zipcode, document_type, and inspection_date. " +
+    "Merge rules: " +
+    "(1) For scalar fields (condition, age, end_of_life, recommendation, inspection_date, addressNumber, streetName, suffix, city, county, zipcode, document_type, fileName): use the first non-null value across all partials. " +
+    "(2) For array fields (issues, findings): concatenate all values from all partials and remove exact duplicates. " +
+    "(3) For the summary sections, merge all findings together — if a section appears in some partials but not others, include it with whatever information is available. " +
+    "(4) Do not invent or infer information not present in any partial. " +
+    "(5) If cost estimates appear in multiple partials for the same section, prefer the one that references an explicit document value. " +
+    "Ensure the values for addressNumber and streetName contain no spaces, and split the suffix from the street name. " +
+    "Do not include any commentary, markdown, or explanations — respond with a JSON object only. " +
+    "Ensure the JSON is properly formatted and valid. " +
+    "Ensure the JSON falls within the maximum token limit of 4000 tokens."
   );
 }
 
@@ -561,6 +615,88 @@ export function registerDocumentDeleteRoutes(app: Express): void {
   });
 }
 
+function splitIntoChunks(text: string, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP): string[] {
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    chunks.push(text.slice(start, start + chunkSize));
+    start += chunkSize - overlap;
+  }
+  return chunks;
+}
+
+function parseJsonResponse(raw: string): any {
+  const cleaned = raw.replace(/^```json\s*/, "").replace(/```\s*$/, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("No JSON object found");
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+async function analyzeSingleCall(text: string, perplexity: OpenAI): Promise<any> {
+  const completion = await perplexity.chat.completions.create({
+    model: "sonar-pro",
+    messages: [
+      { role: "system", content: buildSystemPrompt() },
+      { role: "user", content: `Analyze the following document:\n\n${text}` },
+    ],
+    max_tokens: 4000,
+  });
+  const raw = completion.choices[0]?.message?.content || "";
+  try {
+    return parseJsonResponse(raw);
+  } catch {
+    log(`Failed to parse AI response as JSON, storing as raw`, "analyze");
+    return { raw_response: raw };
+  }
+}
+
+async function analyzeWithChunking(text: string, perplexity: OpenAI, precomputedChunks?: string[]): Promise<any> {
+  const chunks = precomputedChunks ?? splitIntoChunks(text);
+  log(`Map phase: processing ${chunks.length} chunks`, "analyze");
+
+  const partials: any[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    try {
+      const completion = await perplexity.chat.completions.create({
+        model: "sonar-pro",
+        messages: [
+          { role: "system", content: buildMapSystemPrompt() },
+          { role: "user", content: `This is part ${i + 1} of ${chunks.length} of the document. Analyze:\n\n${chunks[i]}` },
+        ],
+        max_tokens: 2000,
+      });
+      const raw = completion.choices[0]?.message?.content || "";
+      partials.push(parseJsonResponse(raw));
+      log(`Chunk ${i + 1}/${chunks.length} complete`, "analyze");
+    } catch (err) {
+      log(`Chunk ${i + 1}/${chunks.length} failed: ${err}, skipping`, "analyze");
+    }
+  }
+
+  if (partials.length === 0) {
+    log(`All chunks failed, falling back to single-call on first ${SINGLE_CALL_LIMIT} chars`, "analyze");
+    return analyzeSingleCall(text.slice(0, SINGLE_CALL_LIMIT), perplexity);
+  }
+
+  log(`Reduce phase: merging ${partials.length} partial analyses`, "analyze");
+  try {
+    const completion = await perplexity.chat.completions.create({
+      model: "sonar-pro",
+      messages: [
+        { role: "system", content: buildReduceSystemPrompt() },
+        { role: "user", content: `Merge these partial analyses into one:\n\n${JSON.stringify(partials)}` },
+      ],
+      max_tokens: 4000,
+    });
+    const raw = completion.choices[0]?.message?.content || "";
+    return parseJsonResponse(raw);
+  } catch (err) {
+    log(`Reduce phase failed: ${err}, returning first successful partial`, "analyze");
+    return partials[0];
+  }
+}
+
 export function registerAnalyzeRoutes(app: Express): void {
   const objectStorageService = new ObjectStorageService();
   let perplexity: OpenAI | null = null;
@@ -568,6 +704,30 @@ export function registerAnalyzeRoutes(app: Express): void {
     if (!perplexity) perplexity = makePerplexityClient();
     return perplexity;
   };
+
+  app.get("/api/documents/:id/analyze-cost/", async (req, res) => {
+    try {
+      const docId = req.params.id;
+      const cookies = req.headers.cookie || "";
+      const requestId = (req as any).requestId ?? "-";
+
+      const docRes = await fetch(`http://127.0.0.1:8000/api/documents/${docId}/`, {
+        headers: { Cookie: cookies, "X-Request-Id": requestId },
+      });
+      if (!docRes.ok) return res.status(docRes.status).json({ error: "Document not found" });
+
+      const doc = (await docRes.json()) as any;
+      if (!doc.storage_path) return res.json({ credits_required: 1 });
+
+      const storagePath = objectStorageService.normalizeObjectEntityPath(doc.storage_path);
+      const documentText = await extractTextFromFile(storagePath, objectStorageService);
+      const chunks = splitIntoChunks(documentText);
+      return res.json({ credits_required: chunks.length, char_count: documentText.length });
+    } catch (err: any) {
+      // On error, fall back to 1 credit so the user isn't blocked
+      return res.json({ credits_required: 1 });
+    }
+  });
 
   app.post("/api/documents/:id/analyze/", async (req, res) => {
     try {
@@ -609,34 +769,19 @@ export function registerAnalyzeRoutes(app: Express): void {
         return res.status(400).json({ error: "Could not extract text from document" });
       }
 
-      const truncated = documentText.slice(0, 60000);
-
-      log(`Extracted text length: ${documentText.length} chars (truncated to ${truncated.length})`, "analyze");
-      // log(`---- FULL DOCUMENT TEXT SENT TO AI ----\n${truncated}\n---- END DOCUMENT TEXT ----`, "analyze");
-
-      const completion = await getPerplexity().chat.completions.create({
-        model: "sonar-pro",
-        messages: [
-          { role: "system", content: buildSystemPrompt() },
-          {
-            role: "user",
-            content: `Analyze the following document:\n\n${truncated}`,
-          },
-        ],
-        max_tokens: 4000,
-      });
-
-      const rawContent = completion.choices[0]?.message?.content || "";
-
-      // log(`---- RAW AI RESPONSE ----\n${rawContent}\n---- END AI RESPONSE ----`, "analyze");
+      const charCount = documentText.length;
+      const estimatedTokens = Math.round(charCount / 4);
+      const chunks = splitIntoChunks(documentText);
+      log(`Extracted text: ${charCount} chars, ~${estimatedTokens} tokens, ${chunks.length} chunk${chunks.length > 1 ? 's' : ''} needed`, "analyze");
 
       let analysisJson: any;
-      try {
-        const cleaned = rawContent.replace(/^```json\s*/, "").replace(/```\s*$/, "").trim();
-        analysisJson = JSON.parse(cleaned);
-      } catch {
-        log(`Failed to parse AI response as JSON, storing as raw`, "analyze");
-        analysisJson = { raw_response: rawContent };
+      let creditsUsed = 1;
+      if (documentText.length <= SINGLE_CALL_LIMIT) {
+        analysisJson = await analyzeSingleCall(documentText, getPerplexity());
+      } else {
+        creditsUsed = chunks.length;
+        log(`Using map-reduce: ${creditsUsed} chunks, costs ${creditsUsed} credits`, "analyze");
+        analysisJson = await analyzeWithChunking(documentText, getPerplexity(), chunks);
       }
 
       const saveRes = await fetch(
@@ -651,6 +796,7 @@ export function registerAnalyzeRoutes(app: Express): void {
           body: JSON.stringify({
             ai_analysis: analysisJson,
             ai_score: analysisJson.ai_score || null,
+            credits_used: creditsUsed,
           }),
         }
       );

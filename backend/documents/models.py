@@ -160,6 +160,7 @@ class CreditTransaction(models.Model):
         ('admin_grant', 'Admin Grant'),
         ('request_approved', 'Request Approved'),
         ('refund', 'Refund'),
+        ('stripe_purchase', 'Stripe Purchase'),
     ]
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='credit_transactions')
     type = models.CharField(max_length=20, choices=TYPE_CHOICES)

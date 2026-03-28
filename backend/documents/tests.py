@@ -4,8 +4,10 @@ Covers: auth views, folder views, document views, team views, admin views,
         credit views, combined analysis, permissions, cache utils,
         middleware, exception handler, share feature, and share-with-user feature.
 """
+import json
 import uuid
 import logging
+from unittest.mock import patch, MagicMock
 from django.test import TestCase, RequestFactory
 from django.contrib.auth.hashers import make_password
 from django.core.cache import cache
@@ -1199,3 +1201,251 @@ class CombinedAnalysisTests(TestCase):
         res = self.client.delete(f"/api/combined-analyses/{ca.id}/")
         self.assertEqual(res.status_code, 204)
         self.assertFalse(CombinedAnalysis.objects.filter(pk=ca.id).exists())
+
+
+# ===========================================================================
+# Stripe Tests
+# ===========================================================================
+
+class StripePackagesTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = make_user("stripe_user")
+        self.client.force_authenticate(user=self.user)
+
+    def test_returns_packages(self):
+        res = self.client.get("/api/credits/packages/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIsInstance(res.data, list)
+        self.assertGreater(len(res.data), 0)
+
+    def test_packages_have_required_fields(self):
+        res = self.client.get("/api/credits/packages/")
+        for pkg in res.data:
+            self.assertIn('id', pkg)
+            self.assertIn('credits', pkg)
+            self.assertIn('price_cents', pkg)
+            self.assertIn('label', pkg)
+
+    def test_unauthenticated_cannot_fetch_packages(self):
+        self.client.force_authenticate(user=None)
+        res = self.client.get("/api/credits/packages/")
+        self.assertEqual(res.status_code, 403)
+
+
+class StripeCheckoutTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = make_user("checkout_user")
+        self.client.force_authenticate(user=self.user)
+
+    @patch('documents.views.stripe')
+    def test_valid_package_returns_checkout_url(self, mock_stripe):
+        mock_session = MagicMock()
+        mock_session.url = 'https://checkout.stripe.com/test'
+        mock_stripe.api_key = ''
+        mock_stripe.checkout.Session.create.return_value = mock_session
+
+        with self.settings(STRIPE_SECRET_KEY='sk_test_fake', FRONTEND_URL='http://localhost:5000'):
+            res = self.client.post("/api/credits/checkout/", {'package_id': 'small'})
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['url'], 'https://checkout.stripe.com/test')
+
+    @patch('documents.views.stripe')
+    def test_checkout_passes_correct_metadata(self, mock_stripe):
+        mock_session = MagicMock()
+        mock_session.url = 'https://checkout.stripe.com/test'
+        mock_stripe.checkout.Session.create.return_value = mock_session
+
+        with self.settings(STRIPE_SECRET_KEY='sk_test_fake', FRONTEND_URL='http://localhost:5000'):
+            self.client.post("/api/credits/checkout/", {'package_id': 'small'})
+
+        call_kwargs = mock_stripe.checkout.Session.create.call_args[1]
+        self.assertEqual(call_kwargs['metadata']['user_id'], str(self.user.id))
+        self.assertIn('credits', call_kwargs['metadata'])
+
+    def test_invalid_package_returns_400(self):
+        res = self.client.post("/api/credits/checkout/", {'package_id': 'nonexistent'})
+        self.assertEqual(res.status_code, 400)
+
+    def test_missing_package_returns_400(self):
+        res = self.client.post("/api/credits/checkout/", {})
+        self.assertEqual(res.status_code, 400)
+
+    def test_unconfigured_stripe_returns_500(self):
+        with self.settings(STRIPE_SECRET_KEY=''):
+            res = self.client.post("/api/credits/checkout/", {'package_id': 'small'})
+        self.assertEqual(res.status_code, 500)
+
+    def test_unauthenticated_cannot_checkout(self):
+        self.client.force_authenticate(user=None)
+        res = self.client.post("/api/credits/checkout/", {'package_id': 'small'})
+        self.assertEqual(res.status_code, 403)
+
+    @patch('documents.views.stripe')
+    def test_stripe_error_returns_500(self, mock_stripe):
+        mock_stripe.api_key = 'sk_test_fake'
+        mock_stripe.StripeError = Exception
+        mock_stripe.checkout.Session.create.side_effect = Exception("card_declined")
+
+        with self.settings(STRIPE_SECRET_KEY='sk_test_fake', FRONTEND_URL='http://localhost:5000'):
+            res = self.client.post("/api/credits/checkout/", {'package_id': 'small'})
+
+        self.assertEqual(res.status_code, 500)
+
+
+class StripeWebhookTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = make_user("webhook_user")
+        self.user.credits = 10
+        self.user.save(update_fields=['credits'])
+
+    def _make_event(self, credits, session_id=None):
+        sid = session_id or f'cs_test_{uuid.uuid4().hex}'
+        return {
+            'type': 'checkout.session.completed',
+            'data': {
+                'object': {
+                    'id': sid,
+                    'metadata': {
+                        'user_id': str(self.user.id),
+                        'credits': str(credits),
+                    },
+                }
+            },
+        }
+
+    @patch('documents.views.stripe')
+    def test_valid_webhook_adds_credits(self, mock_stripe):
+        event = self._make_event(credits=50)
+        mock_stripe.Webhook.construct_event.return_value = event
+        mock_stripe.error.SignatureVerificationError = Exception
+
+        with self.settings(STRIPE_WEBHOOK_SECRET='whsec_fake'):
+            res = self.client.post(
+                "/api/stripe/webhook/",
+                data=json.dumps(event),
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='t=fake,v1=fake',
+            )
+
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.credits, 60)  # 10 + 50
+
+    @patch('documents.views.stripe')
+    def test_valid_webhook_creates_transaction(self, mock_stripe):
+        event = self._make_event(credits=50)
+        mock_stripe.Webhook.construct_event.return_value = event
+        mock_stripe.error.SignatureVerificationError = Exception
+
+        with self.settings(STRIPE_WEBHOOK_SECRET='whsec_fake'):
+            self.client.post(
+                "/api/stripe/webhook/",
+                data=json.dumps(event),
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='t=fake,v1=fake',
+            )
+
+        tx = CreditTransaction.objects.get(user=self.user, type='stripe_purchase')
+        self.assertEqual(tx.amount, 50)
+
+    @patch('documents.views.stripe')
+    def test_duplicate_webhook_does_not_double_grant(self, mock_stripe):
+        session_id = f'cs_test_{uuid.uuid4().hex}'
+        event = self._make_event(credits=50, session_id=session_id)
+        mock_stripe.Webhook.construct_event.return_value = event
+        mock_stripe.error.SignatureVerificationError = Exception
+
+        with self.settings(STRIPE_WEBHOOK_SECRET='whsec_fake'):
+            for _ in range(2):
+                self.client.post(
+                    "/api/stripe/webhook/",
+                    data=json.dumps(event),
+                    content_type='application/json',
+                    HTTP_STRIPE_SIGNATURE='t=fake,v1=fake',
+                )
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.credits, 60)  # Only added once
+        self.assertEqual(CreditTransaction.objects.filter(user=self.user, type='stripe_purchase').count(), 1)
+
+    @patch('documents.views.stripe')
+    def test_invalid_signature_returns_400(self, mock_stripe):
+        mock_stripe.error.SignatureVerificationError = Exception
+        mock_stripe.Webhook.construct_event.side_effect = Exception("Invalid signature")
+
+        with self.settings(STRIPE_WEBHOOK_SECRET='whsec_fake'):
+            res = self.client.post(
+                "/api/stripe/webhook/",
+                data='bad-payload',
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='t=bad,v1=bad',
+            )
+
+        self.assertEqual(res.status_code, 400)
+
+    @patch('documents.views.stripe')
+    def test_unknown_user_id_is_ignored(self, mock_stripe):
+        event = {
+            'type': 'checkout.session.completed',
+            'data': {'object': {'id': 'cs_test_x', 'metadata': {'user_id': '99999', 'credits': '50'}}},
+        }
+        mock_stripe.Webhook.construct_event.return_value = event
+        mock_stripe.error.SignatureVerificationError = Exception
+
+        with self.settings(STRIPE_WEBHOOK_SECRET='whsec_fake'):
+            res = self.client.post(
+                "/api/stripe/webhook/",
+                data=json.dumps(event),
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='t=fake,v1=fake',
+            )
+
+        self.assertEqual(res.status_code, 200)  # Silently ignored
+
+    @patch('documents.views.stripe')
+    def test_missing_metadata_is_ignored(self, mock_stripe):
+        event = {
+            'type': 'checkout.session.completed',
+            'data': {'object': {'id': 'cs_test_y', 'metadata': {}}},
+        }
+        mock_stripe.Webhook.construct_event.return_value = event
+        mock_stripe.error.SignatureVerificationError = Exception
+
+        with self.settings(STRIPE_WEBHOOK_SECRET='whsec_fake'):
+            res = self.client.post(
+                "/api/stripe/webhook/",
+                data=json.dumps(event),
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='t=fake,v1=fake',
+            )
+
+        self.assertEqual(res.status_code, 200)
+
+    @patch('documents.views.stripe')
+    def test_unhandled_event_type_is_ignored(self, mock_stripe):
+        event = {'type': 'payment_intent.created', 'data': {'object': {}}}
+        mock_stripe.Webhook.construct_event.return_value = event
+        mock_stripe.error.SignatureVerificationError = Exception
+
+        with self.settings(STRIPE_WEBHOOK_SECRET='whsec_fake'):
+            res = self.client.post(
+                "/api/stripe/webhook/",
+                data=json.dumps(event),
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='t=fake,v1=fake',
+            )
+
+        self.assertEqual(res.status_code, 200)
+
+    def test_unconfigured_webhook_secret_returns_500(self):
+        with self.settings(STRIPE_WEBHOOK_SECRET=''):
+            res = self.client.post(
+                "/api/stripe/webhook/",
+                data='{}',
+                content_type='application/json',
+            )
+        self.assertEqual(res.status_code, 500)

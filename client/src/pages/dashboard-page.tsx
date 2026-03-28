@@ -141,6 +141,7 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
   const [uploadDestNewName, setUploadDestNewName] = useState('');
   const [selectedFile, setSelectedFile] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [pendingAnalyzeFile, setPendingAnalyzeFile] = useState<any>(null);
   const [groupBy, setGroupBy] = useState(true);
   const [newGroupName, setNewGroupName] = useState("");
   const [folderPopoverOpen, setFolderPopoverOpen] = useState(false);
@@ -329,13 +330,8 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
     loadData();
   };
 
-  const handleAnalyze = async (targetFile?: any) => {
-    const fileToAnalyze = targetFile || selectedFile;
-    if (!fileToAnalyze || !decrementRateLimit()) return;
-    if ((user?.credits ?? 0) < 1) {
-      toast({ title: "No credits remaining", description: "Request more credits on the Teams page.", variant: "destructive" });
-      return;
-    }
+  const doAnalyze = async (fileToAnalyze: any) => {
+    if (!decrementRateLimit()) return;
     setSelectedFile(fileToAnalyze);
     setIsAnalyzing(true);
     const res = await apiFetch(`/api/documents/${fileToAnalyze.id}/analyze/`, {
@@ -354,6 +350,26 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
       await refreshUser();
     }
     setIsAnalyzing(false);
+  };
+
+  const handleAnalyze = async (targetFile?: any) => {
+    const fileToAnalyze = targetFile || selectedFile;
+    if (!fileToAnalyze) return;
+    if ((user?.credits ?? 0) < 1) {
+      toast({ title: "No credits remaining", description: "Request more credits on the Teams page.", variant: "destructive" });
+      return;
+    }
+    try {
+      const costRes = await apiFetch(`/api/documents/${fileToAnalyze.id}/analyze-cost/`);
+      const { credits_required } = await costRes.json();
+      if (credits_required > 1) {
+        setPendingAnalyzeFile({ ...fileToAnalyze, credits_required });
+        return;
+      }
+    } catch {
+      // If cost check fails, proceed normally
+    }
+    await doAnalyze(fileToAnalyze);
   };
 
   const categorizeName = (fileName: string, allFolders: any[]): { matchedFolder: any | null; suggestedName: string } => {
@@ -1474,6 +1490,28 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
         </DialogContent>
       </Dialog>
 
+      <Dialog open={!!pendingAnalyzeFile} onOpenChange={(open) => { if (!open) setPendingAnalyzeFile(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5" />
+              Large Document
+            </DialogTitle>
+            <DialogDescription>
+              <strong>{pendingAnalyzeFile?.name}</strong> is a larger document and will cost{' '}
+              <strong>{pendingAnalyzeFile?.credits_required} credits</strong> to analyze. You currently have{' '}
+              <strong>{user?.credits ?? 0} credits</strong>. Would you like to proceed?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="justify-center sm:justify-center">
+            <Button variant="outline" onClick={() => setPendingAnalyzeFile(null)}>Cancel</Button>
+            <Button onClick={() => { const f = pendingAnalyzeFile; setPendingAnalyzeFile(null); doAnalyze(f); }}>
+              <Sparkles className="mr-2 h-4 w-4" />Proceed
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={showCreditsDialog} onOpenChange={setShowCreditsDialog}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -1516,7 +1554,7 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
               </div>
             )}
           </div>
-          <DialogFooter>
+          <DialogFooter className="justify-center sm:justify-center">
             <Button variant="outline" onClick={() => setShowCreditsDialog(false)}>Close</Button>
             {myCreditRequest === null && (
               <Button onClick={handleCreditRequest}>

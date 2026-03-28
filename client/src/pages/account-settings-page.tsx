@@ -1,12 +1,69 @@
+import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/mock-auth";
 import { useClerk } from "@clerk/clerk-react";
+import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { KeyRound } from "lucide-react";
+import { KeyRound, Zap, Loader2 } from "lucide-react";
+
+interface CreditPackage {
+  id: string;
+  credits: number;
+  price_cents: number;
+  label: string;
+  description: string;
+}
 
 export default function AccountSettingsPage() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const { openUserProfile } = useClerk();
+  const { toast } = useToast();
+  const [packages, setPackages] = useState<CreditPackage[]>([]);
+  const [purchasing, setPurchasing] = useState<string | null>(null);
+
+  // Fetch available credit packages
+  useEffect(() => {
+    fetch('/api/credits/packages/', { credentials: 'include' })
+      .then(r => r.json())
+      .then(setPackages)
+      .catch(() => {});
+  }, []);
+
+  // Handle Stripe redirect back
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('stripe_success')) {
+      window.history.replaceState({}, '', '/settings');
+      toast({ title: "Purchase successful!", description: "Credits have been added to your account." });
+      // Webhook and redirect race — refresh after a short delay to pick up the added credits
+      setTimeout(() => refreshUser(), 1500);
+    } else if (params.get('stripe_canceled')) {
+      window.history.replaceState({}, '', '/settings');
+      toast({ title: "Purchase canceled", description: "No charges were made.", variant: "destructive" });
+    }
+  }, []);
+
+  const handleBuy = async (packageId: string) => {
+    setPurchasing(packageId);
+    try {
+      const res = await fetch('/api/credits/checkout/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ package_id: packageId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast({ title: "Error", description: data.error || "Could not start checkout.", variant: "destructive" });
+        return;
+      }
+      window.location.href = data.url;
+    } catch {
+      toast({ title: "Error", description: "Could not connect to server.", variant: "destructive" });
+    } finally {
+      setPurchasing(null);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
@@ -39,6 +96,8 @@ export default function AccountSettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Buy Credits card hidden — not yet launched */}
 
       <Card>
         <CardHeader>

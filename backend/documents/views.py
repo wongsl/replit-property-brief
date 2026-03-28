@@ -1,6 +1,8 @@
 from datetime import timedelta
+import stripe
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import api_view, action, permission_classes
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password, check_password
@@ -497,14 +499,19 @@ class DocumentViewSet(viewsets.ModelViewSet):
         doc = self.get_object()
         ai_analysis = request.data.get('ai_analysis')
         ai_score = request.data.get('ai_score')
+        credits_used = request.data.get('credits_used', 1)
+        try:
+            credits_used = max(1, int(credits_used))
+        except (TypeError, ValueError):
+            credits_used = 1
 
         if ai_analysis is None and ai_score is None:
             return Response({'error': 'No analysis data provided'}, status=400)
 
         with db_transaction.atomic():
             user = User.objects.select_for_update().get(pk=request.user.pk)
-            if user.credits < 1:
-                return Response({'error': 'Insufficient credits. Request more credits to continue analyzing.'}, status=402)
+            if user.credits < credits_used:
+                return Response({'error': f'Insufficient credits. This analysis requires {credits_used} credit{"s" if credits_used > 1 else ""}.'}, status=402)
 
             if ai_analysis is not None:
                 doc.ai_analysis = ai_analysis
@@ -512,14 +519,15 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 doc.ai_score = ai_score
             doc.save(update_fields=['ai_analysis', 'ai_score'])
 
-            user.credits -= 1
+            user.credits -= credits_used
             user.save(update_fields=['credits'])
+            note = f'Analysis of "{doc.name}"' if credits_used == 1 else f'Analysis of "{doc.name}" ({credits_used} chunks)'
             CreditTransaction.objects.create(
                 user=user,
                 type='analyze',
-                amount=-1,
+                amount=-credits_used,
                 document=doc,
-                note=f'Analysis of "{doc.name}"',
+                note=note,
             )
 
         invalidate_docs(request.user.id, getattr(request.user, 'team_id', None))
@@ -1104,3 +1112,109 @@ class CombinedAnalysisViewSet(viewsets.ModelViewSet):
             is_favorited = True
         invalidate_folders(request.user.id)
         return Response({'is_favorited': is_favorited})
+
+
+# --- Stripe Views ---
+
+CREDIT_PACKAGES = [
+    {'id': 'small',  'credits': 50,  'price_cents': 100, 'label': '50 Credits',  'description': 'Best for occasional use'},
+    {'id': 'large',  'credits': 100, 'price_cents': 150, 'label': '100 Credits', 'description': 'Best value'},
+]
+
+
+@api_view(['GET'])
+def credit_packages(request):
+    """Return available credit purchase packages."""
+    return Response(CREDIT_PACKAGES)
+
+
+@api_view(['POST'])
+def create_checkout_session(request):
+    """Create a Stripe Checkout session for purchasing credits."""
+    package_id = request.data.get('package_id')
+    package = next((p for p in CREDIT_PACKAGES if p['id'] == package_id), None)
+    if not package:
+        return Response({'error': 'Invalid package'}, status=400)
+
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    if not stripe.api_key:
+        return Response({'error': 'Stripe is not configured'}, status=500)
+
+    frontend_url = settings.FRONTEND_URL
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'usd',
+                    'product_data': {
+                        'name': f'{package["credits"]} Credits',
+                        'description': package['description'],
+                    },
+                    'unit_amount': package['price_cents'],
+                },
+                'quantity': 1,
+            }],
+            mode='payment',
+            success_url=f'{frontend_url}/settings?stripe_success=true&session_id={{CHECKOUT_SESSION_ID}}',
+            cancel_url=f'{frontend_url}/settings?stripe_canceled=true',
+            metadata={
+                'user_id': str(request.user.id),
+                'credits': str(package['credits']),
+            },
+            customer_email=request.user.email or None,
+        )
+    except stripe.StripeError as e:
+        return Response({'error': str(e)}, status=500)
+
+    return Response({'url': session.url})
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def stripe_webhook(request):
+    """Handle Stripe webhook events."""
+    webhook_secret = settings.STRIPE_WEBHOOK_SECRET
+    if not webhook_secret:
+        return Response({'error': 'Webhook not configured'}, status=500)
+
+    payload = request.body
+    sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except ValueError:
+        return Response({'error': 'Invalid payload'}, status=400)
+    except stripe.error.SignatureVerificationError:
+        return Response({'error': 'Invalid signature'}, status=400)
+
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        metadata = session.get('metadata', {})
+        user_id = metadata.get('user_id')
+        credits_str = metadata.get('credits')
+
+        if not user_id or not credits_str:
+            return Response({'status': 'ignored'})
+
+        try:
+            credits = int(credits_str)
+            stripe_session_id = session['id']
+            with db_transaction.atomic():
+                # Idempotency: skip if this session was already processed
+                if CreditTransaction.objects.filter(note__contains=stripe_session_id).exists():
+                    return Response({'status': 'already_processed'})
+                user = User.objects.select_for_update().get(pk=int(user_id))
+                user.credits += credits
+                user.save(update_fields=['credits'])
+                CreditTransaction.objects.create(
+                    user=user,
+                    type='stripe_purchase',
+                    amount=credits,
+                    note=f'Purchased {credits} credits via Stripe (session {stripe_session_id})',
+                )
+            invalidate_user(int(user_id))
+        except (User.DoesNotExist, ValueError):
+            pass
+
+    return Response({'status': 'success'})
