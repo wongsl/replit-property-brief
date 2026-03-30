@@ -139,6 +139,6 @@ cur.close()
 conn.close()
 
 # ── Step 3: run any remaining pending migrations ──
-run("python3.11 manage.py migrate")
+run(f"{sys.executable} manage.py migrate")
 
 print("All migrations complete.", flush=True)
