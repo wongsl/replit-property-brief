@@ -11,5 +11,11 @@ export default defineConfig({
   dbCredentials: {
     url: process.env.DATABASE_URL,
   },
-  tablesFilter: ["uploads"],
+  tablesFilter: [
+    "uploads",
+    "feature_flags",
+    "feature_flags_allowed_users",
+    "combined_analyses_favorited_by",
+    "folders_favorited_by",
+  ],
 });
