@@ -9,7 +9,7 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
-    "db:push": "drizzle-kit push --strict"
+    "db:push": "node -e \"console.log('Drizzle push disabled: schema is managed by Django migrations and run_migrations.py'); process.exit(0);\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1011.0",
