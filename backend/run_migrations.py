@@ -74,9 +74,37 @@ cur.execute("CREATE INDEX IF NOT EXISTS joinreq_team_status_idx    ON team_join_
 cur.execute("CREATE INDEX IF NOT EXISTS creditreq_user_status_idx  ON credit_requests (user_id, status);")
 cur.execute("CREATE INDEX IF NOT EXISTS credittx_user_created_idx  ON credit_transactions (user_id, created_at DESC);")
 
+# Migration 0011: feature_flags table (AlterField on credit_transactions.type is DDL no-op)
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS feature_flags (
+        id           bigserial PRIMARY KEY,
+        key          varchar(100) NOT NULL,
+        name         varchar(200) NOT NULL,
+        description  text        NOT NULL DEFAULT '',
+        enabled      boolean     NOT NULL DEFAULT false,
+        updated_at   timestamptz NOT NULL DEFAULT NOW(),
+        updated_by_id integer REFERENCES users(id) ON DELETE SET NULL
+    );
+""")
+cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS feature_flags_key_uniq ON feature_flags (key);")
+
+# Migration 0012: allowed_roles column + allowed_users M2M table on feature_flags
+cur.execute("""
+    ALTER TABLE feature_flags
+        ADD COLUMN IF NOT EXISTS allowed_roles jsonb NOT NULL DEFAULT '[]'::jsonb;
+""")
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS feature_flags_allowed_users (
+        id              serial  PRIMARY KEY,
+        featureflag_id  bigint  NOT NULL REFERENCES feature_flags(id) ON DELETE CASCADE,
+        user_id         integer NOT NULL REFERENCES users(id)         ON DELETE CASCADE,
+        UNIQUE (featureflag_id, user_id)
+    );
+""")
+
 print("Schema patch complete.", flush=True)
 
-# ── Step 2: mark migrations 0006-0010 as applied if not already recorded ──
+# ── Step 2: mark migrations 0006-0012 as applied if not already recorded ──
 # Insert each record only if it isn't already present. We do NOT use
 # `migrate --fake` to a specific version because that unapplies any newer
 # migrations that are already recorded, causing them to re-run and crash
@@ -87,6 +115,8 @@ migrations_to_ensure = [
     "0008_combinedanalysis_favorited_by",
     "0009_document_owner_created_at_indexes",
     "0010_composite_indexes",
+    "0011_feature_flags",
+    "0012_feature_flag_targeting",
 ]
 now = datetime.now(timezone.utc)
 for name in migrations_to_ensure:
