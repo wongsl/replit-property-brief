@@ -195,6 +195,34 @@ class CreditRequest(models.Model):
         ]
 
 
+class FeatureFlag(models.Model):
+    key = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    enabled = models.BooleanField(default=False)
+    # Targeting: empty = no restriction (available to all). Non-empty = union of role + user matches.
+    allowed_roles = models.JSONField(default=list, blank=True)  # e.g. ["admin", "team_leader"]
+    allowed_users = models.ManyToManyField(User, blank=True, related_name='feature_flags')
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='feature_flag_updates')
+
+    def is_active_for(self, user) -> bool:
+        """Return True if this flag is enabled and the user matches the targeting rules."""
+        if not self.enabled:
+            return False
+        if not self.allowed_roles and not self.allowed_users.exists():
+            return True  # No restrictions — open to all
+        if self.allowed_roles and user.role in self.allowed_roles:
+            return True
+        if self.allowed_users.filter(pk=user.pk).exists():
+            return True
+        return False
+
+    class Meta:
+        db_table = 'feature_flags'
+        ordering = ['key']
+
+
 class PasswordResetToken(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reset_tokens')
     token = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)

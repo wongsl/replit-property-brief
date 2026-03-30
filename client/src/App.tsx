@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import { AuthProvider, useAuth } from "@/lib/mock-auth";
+import { FeatureFlagsProvider } from "@/lib/feature-flags";
 import { AppLayout } from "@/components/nav-sidebar";
 import AuthPage from "@/pages/auth-page";
 import DashboardPage from "@/pages/dashboard-page";
@@ -112,8 +113,10 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <AuthProvider>
-          <Toaster />
-          <Router />
+          <FeatureFlagsProvider>
+            <Toaster />
+            <Router />
+          </FeatureFlagsProvider>
         </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>

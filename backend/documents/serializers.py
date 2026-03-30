@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest, CombinedAnalysis
+from .models import User, Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest, CombinedAnalysis, FeatureFlag
 
 
 class TeamSerializer(serializers.ModelSerializer):
@@ -170,3 +170,16 @@ class CreditRequestSerializer(serializers.ModelSerializer):
         model = CreditRequest
         fields = ['id', 'user', 'username', 'amount', 'status', 'requested_at', 'resolved_at']
         read_only_fields = ['user', 'username', 'status', 'requested_at', 'resolved_at']
+
+
+class FeatureFlagSerializer(serializers.ModelSerializer):
+    updated_by_name = serializers.CharField(source='updated_by.username', read_only=True, default=None)
+    allowed_users_detail = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FeatureFlag
+        fields = ['key', 'name', 'description', 'enabled', 'allowed_roles', 'allowed_users_detail', 'updated_at', 'updated_by_name']
+        read_only_fields = ['key', 'name', 'description', 'updated_at', 'updated_by_name', 'allowed_users_detail']
+
+    def get_allowed_users_detail(self, obj):
+        return [{'id': u.id, 'username': u.username} for u in obj.allowed_users.all()]

@@ -34,6 +34,10 @@ urlpatterns = [
     path('credits/packages/', views.credit_packages),
     path('credits/checkout/', views.create_checkout_session),
     path('stripe/webhook/', views.stripe_webhook),
+    path('stripe/verify-session/', views.verify_stripe_session),
+    path('feature-flags/', views.feature_flags_public),
+    path('admin/feature-flags/', views.admin_feature_flags),
+    path('admin/feature-flags/<str:key>/', views.admin_feature_flag_toggle),
     path('share/<uuid:token>/', views.share_view),
     path('', include(router.urls)),
 ]

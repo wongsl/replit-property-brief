@@ -8,8 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Users, Activity, ShieldAlert, Settings, MoreVertical, Trash2, UserCog,
-  CheckCircle, XCircle, ShieldCheck, Coins, Plus, Minus, Files, ChevronDown, ChevronRight, ChevronLeft, Search
+  CheckCircle, XCircle, ShieldCheck, Coins, Plus, Minus, Files, ChevronDown, ChevronRight, ChevronLeft, Search, FlaskConical
 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -66,6 +67,10 @@ export default function AdminPage() {
   const [usersPage, setUsersPage] = useState(1);
   const [userSearch, setUserSearch] = useState("");
   const USERS_PER_PAGE = 10;
+  const [featureFlags, setFeatureFlags] = useState<any[]>([]);
+  const [togglingFlag, setTogglingFlag] = useState<string | null>(null);
+  const [expandedFlag, setExpandedFlag] = useState<string | null>(null);
+  const [flagUserSearch, setFlagUserSearch] = useState<Record<string, string>>({});
 
   const filteredUsers = useMemo(() => {
     const q = userSearch.trim().toLowerCase();
@@ -131,10 +136,44 @@ export default function AdminPage() {
     });
   };
 
+  const loadFeatureFlags = () => {
+    apiFetch('/api/admin/feature-flags/').then(async (res) => {
+      if (res.ok) setFeatureFlags(await res.json());
+    });
+  };
+
+  const patchFlag = async (key: string, patch: object) => {
+    setTogglingFlag(key);
+    const res = await apiFetch(`/api/admin/feature-flags/${key}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setFeatureFlags(prev => prev.map(f => f.key === key ? updated : f));
+    }
+    setTogglingFlag(null);
+  };
+
+  const handleToggleFlag = (key: string, enabled: boolean) => patchFlag(key, { enabled });
+
+  const handleToggleRole = (flag: any, role: string) => {
+    const current: string[] = flag.allowed_roles ?? [];
+    const next = current.includes(role) ? current.filter((r: string) => r !== role) : [...current, role];
+    patchFlag(flag.key, { allowed_roles: next });
+  };
+
+  const handleToggleFlagUser = (flag: any, userId: number) => {
+    const current: number[] = flag.allowed_users_detail.map((u: any) => u.id);
+    const next = current.includes(userId) ? current.filter((id: number) => id !== userId) : [...current, userId];
+    patchFlag(flag.key, { allowed_user_ids: next });
+  };
+
   useEffect(() => {
     loadUsers();
     loadApplications();
     loadCreditRequests();
+    loadFeatureFlags();
     apiFetch('/api/teams/').then(async (res) => {
       if (res.ok) setTeams(await res.json());
     });
@@ -652,6 +691,154 @@ export default function AdminPage() {
             </Table>
           </CardContent>
         )}
+      </Card>
+
+      {/* Feature Flags */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <FlaskConical className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">Experiments</CardTitle>
+          </div>
+          <CardDescription>Toggle features and target specific roles or users.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {featureFlags.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No feature flags configured.</p>
+          ) : (
+            <div className="divide-y">
+              {featureFlags.map((flag) => {
+                const isExpanded = expandedFlag === flag.key;
+                const hasTargeting = (flag.allowed_roles?.length > 0) || (flag.allowed_users_detail?.length > 0);
+                const userSearch = flagUserSearch[flag.key] ?? '';
+                const matchedUsers = users.filter((u: any) =>
+                  u.username.toLowerCase().includes(userSearch.toLowerCase()) ||
+                  (u.email ?? '').toLowerCase().includes(userSearch.toLowerCase())
+                );
+                const ALL_ROLES = ['admin', 'team_leader', 'user', 'viewer'];
+                return (
+                  <div key={flag.key} className="py-3 space-y-3">
+                    {/* Header row */}
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium">{flag.name}</p>
+                          {hasTargeting && (
+                            <Badge variant="outline" className="text-xs">Targeted</Badge>
+                          )}
+                        </div>
+                        {flag.description && <p className="text-xs text-muted-foreground">{flag.description}</p>}
+                        {flag.updated_by_name && (
+                          <p className="text-xs text-muted-foreground">Last changed by {flag.updated_by_name}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-xs text-muted-foreground"
+                          onClick={() => setExpandedFlag(isExpanded ? null : flag.key)}
+                        >
+                          {isExpanded ? 'Hide' : 'Target'}
+                          {isExpanded ? <ChevronDown className="ml-1 h-3 w-3" /> : <ChevronRight className="ml-1 h-3 w-3" />}
+                        </Button>
+                        <Switch
+                          checked={flag.enabled}
+                          disabled={togglingFlag === flag.key}
+                          onCheckedChange={(enabled) => handleToggleFlag(flag.key, enabled)}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Targeting panel */}
+                    {isExpanded && (
+                      <div className="rounded-md border bg-muted/30 p-3 space-y-4 text-sm">
+                        <p className="text-xs text-muted-foreground">
+                          {hasTargeting
+                            ? 'Flag is visible to users matching any of the targets below.'
+                            : 'No targeting set — flag is visible to all users when enabled.'}
+                        </p>
+
+                        {/* Role targeting */}
+                        <div className="space-y-1.5">
+                          <p className="text-xs font-medium">Roles</p>
+                          <div className="flex flex-wrap gap-2">
+                            {ALL_ROLES.map((role) => {
+                              const active = (flag.allowed_roles ?? []).includes(role);
+                              return (
+                                <button
+                                  key={role}
+                                  onClick={() => handleToggleRole(flag, role)}
+                                  disabled={togglingFlag === flag.key}
+                                  className={`rounded-full px-3 py-1 text-xs font-medium border transition-colors ${
+                                    active
+                                      ? 'bg-primary text-primary-foreground border-primary'
+                                      : 'bg-background text-muted-foreground border-border hover:bg-muted'
+                                  }`}
+                                >
+                                  {role === 'team_leader' ? 'Team Leader' : role.charAt(0).toUpperCase() + role.slice(1)}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* User targeting */}
+                        <div className="space-y-1.5">
+                          <p className="text-xs font-medium">Users</p>
+                          {flag.allowed_users_detail?.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mb-2">
+                              {flag.allowed_users_detail.map((u: any) => (
+                                <span key={u.id} className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">
+                                  {u.username}
+                                  <button
+                                    onClick={() => handleToggleFlagUser(flag, u.id)}
+                                    disabled={togglingFlag === flag.key}
+                                    className="hover:opacity-70"
+                                  >
+                                    <XCircle className="h-3 w-3" />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <div className="relative">
+                            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                            <Input
+                              className="h-7 pl-7 text-xs"
+                              placeholder="Search users to add…"
+                              value={userSearch}
+                              onChange={(e) => setFlagUserSearch(prev => ({ ...prev, [flag.key]: e.target.value }))}
+                            />
+                          </div>
+                          {userSearch && (
+                            <div className="max-h-32 overflow-y-auto rounded-md border bg-background">
+                              {matchedUsers.slice(0, 8).map((u: any) => {
+                                const added = flag.allowed_users_detail?.some((fu: any) => fu.id === u.id);
+                                return (
+                                  <button
+                                    key={u.id}
+                                    onClick={() => { handleToggleFlagUser(flag, u.id); setFlagUserSearch(prev => ({ ...prev, [flag.key]: '' })); }}
+                                    disabled={togglingFlag === flag.key || added}
+                                    className="w-full flex items-center justify-between px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-50 text-left"
+                                  >
+                                    <span>{u.username}{u.email ? ` — ${u.email}` : ''}</span>
+                                    {added && <CheckCircle className="h-3 w-3 text-primary" />}
+                                  </button>
+                                );
+                              })}
+                              {matchedUsers.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">No users found</p>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
       </Card>
 
       {/* Grant Credits Dialog */}

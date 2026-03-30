@@ -12,11 +12,11 @@ from django.db import transaction as db_transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest, CombinedAnalysis, PasswordResetToken
+from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest, CombinedAnalysis, PasswordResetToken, FeatureFlag
 from .serializers import (
     UserSerializer, TeamSerializer, FolderSerializer, TagSerializer,
     DocumentSerializer, DocumentPermissionSerializer, TeamJoinRequestSerializer, AdminRequestSerializer,
-    CreditTransactionSerializer, CreditRequestSerializer, CombinedAnalysisSerializer
+    CreditTransactionSerializer, CreditRequestSerializer, CombinedAnalysisSerializer, FeatureFlagSerializer
 )
 from .cache_utils import (
     get_cached, set_cached, _docs_key, _folders_key, _teams_key,
@@ -1114,6 +1114,61 @@ class CombinedAnalysisViewSet(viewsets.ModelViewSet):
         return Response({'is_favorited': is_favorited})
 
 
+# --- Feature Flag Views ---
+
+@api_view(['GET'])
+def feature_flags_public(request):
+    """Return flag keys that are active for the requesting user."""
+    active = [f.key for f in FeatureFlag.objects.prefetch_related('allowed_users') if f.is_active_for(request.user)]
+    return Response(active)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdmin])
+def admin_feature_flags(request):
+    """List all feature flags with targeting details. Admin only."""
+    flags = FeatureFlag.objects.prefetch_related('allowed_users').all()
+    return Response(FeatureFlagSerializer(flags, many=True).data)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAdmin])
+def admin_feature_flag_toggle(request, key):
+    """Update a feature flag — toggle enabled and/or update targeting. Admin only."""
+    try:
+        flag = FeatureFlag.objects.get(key=key)
+    except FeatureFlag.DoesNotExist:
+        return Response({'error': 'Flag not found'}, status=404)
+
+    update_fields = ['updated_by', 'updated_at']
+
+    if 'enabled' in request.data:
+        enabled = request.data['enabled']
+        if not isinstance(enabled, bool):
+            return Response({'error': '`enabled` must be a boolean'}, status=400)
+        flag.enabled = enabled
+        update_fields.append('enabled')
+
+    if 'allowed_roles' in request.data:
+        roles = request.data['allowed_roles']
+        valid_roles = {r for r, _ in User.ROLE_CHOICES}
+        if not isinstance(roles, list) or not all(r in valid_roles for r in roles):
+            return Response({'error': f'allowed_roles must be a list of valid roles: {list(valid_roles)}'}, status=400)
+        flag.allowed_roles = roles
+        update_fields.append('allowed_roles')
+
+    if 'allowed_user_ids' in request.data:
+        user_ids = request.data['allowed_user_ids']
+        if not isinstance(user_ids, list):
+            return Response({'error': 'allowed_user_ids must be a list'}, status=400)
+        flag.allowed_users.set(User.objects.filter(pk__in=user_ids))
+
+    flag.updated_by = request.user
+    flag.save(update_fields=update_fields)
+    flag.refresh_from_db()
+    return Response(FeatureFlagSerializer(flag).data)
+
+
 # --- Stripe Views ---
 
 CREDIT_PACKAGES = [
@@ -1218,3 +1273,61 @@ def stripe_webhook(request):
             pass
 
     return Response({'status': 'success'})
+
+
+@api_view(['POST'])
+def verify_stripe_session(request):
+    """Verify a Stripe Checkout session and fulfill credits if payment succeeded.
+
+    Called by the frontend after a successful redirect from Stripe. This is the
+    primary fulfillment path — the webhook is a backup. Using direct session
+    retrieval avoids webhook delivery issues in development/staging environments.
+    """
+    session_id = request.data.get('session_id')
+    if not session_id:
+        return Response({'error': 'session_id required'}, status=400)
+
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    if not stripe.api_key:
+        return Response({'error': 'Stripe is not configured'}, status=500)
+
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except stripe.StripeError as e:
+        return Response({'error': str(e)}, status=400)
+
+    if session.payment_status != 'paid':
+        return Response({'status': 'not_paid', 'payment_status': session.payment_status})
+
+    metadata = session.get('metadata') or {}
+    user_id = metadata.get('user_id')
+    credits_str = metadata.get('credits')
+
+    if not user_id or not credits_str:
+        return Response({'error': 'Missing metadata in session'}, status=400)
+
+    # Verify the session belongs to this user (security check)
+    if str(request.user.id) != str(user_id):
+        return Response({'error': 'Session does not belong to current user'}, status=403)
+
+    try:
+        credits = int(credits_str)
+        with db_transaction.atomic():
+            # Idempotency: skip if already processed (by this endpoint or webhook)
+            if CreditTransaction.objects.filter(note__contains=session_id).exists():
+                user = User.objects.get(pk=int(user_id))
+                return Response({'status': 'already_processed', 'credits': user.credits})
+            user = User.objects.select_for_update().get(pk=int(user_id))
+            user.credits += credits
+            user.save(update_fields=['credits'])
+            CreditTransaction.objects.create(
+                user=user,
+                type='stripe_purchase',
+                amount=credits,
+                note=f'Purchased {credits} credits via Stripe (session {session_id})',
+            )
+        invalidate_user(int(user_id))
+        user.refresh_from_db()
+        return Response({'status': 'fulfilled', 'credits': user.credits})
+    except (User.DoesNotExist, ValueError) as e:
+        return Response({'error': str(e)}, status=400)
