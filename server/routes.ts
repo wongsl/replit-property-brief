@@ -74,6 +74,14 @@ export async function registerRoutes(
   const djangoProxy = createProxyMiddleware({
     target: "http://127.0.0.1:8000",
     changeOrigin: true,
+    on: {
+      error: (err: Error, req: any, res: any) => {
+        log(`Proxy error (Django not ready?): ${err.message}`, "django");
+        if (!res.headersSent) {
+          res.status(502).json({ error: "Backend service unavailable. Please retry." });
+        }
+      },
+    },
   });
 
   app.use("/api", (req, res, next) => {
