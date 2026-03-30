@@ -570,37 +570,41 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
       }
       if (allowed.length === 0) return;
 
-      // Step 2: AI screening
-      setIsScreening(true);
+      // Step 2: AI screening (skip for single file uploads)
       let toUpload: File[] = [];
-      try {
-        const screenRes = await apiFetch('/api/screen-files/', {
-          method: 'POST',
-          body: JSON.stringify({ file_names: allowed.map(f => f.name) }),
-        });
-        if (!screenRes.ok) {
-          const err = await screenRes.json().catch(() => ({}));
-          throw new Error(err.error || `Screening failed (${screenRes.status})`);
+      if (allowed.length === 1) {
+        toUpload = allowed;
+      } else {
+        setIsScreening(true);
+        try {
+          const screenRes = await apiFetch('/api/screen-files/', {
+            method: 'POST',
+            body: JSON.stringify({ file_names: allowed.map(f => f.name) }),
+          });
+          if (!screenRes.ok) {
+            const err = await screenRes.json().catch(() => ({}));
+            throw new Error(err.error || `Screening failed (${screenRes.status})`);
+          }
+          const { approved } = await screenRes.json() as { approved: string[] };
+          const approvedSet = new Set(approved.map((n: string) => n.toLowerCase()));
+          toUpload = allowed.filter(f => approvedSet.has(f.name.toLowerCase()));
+          const skipped = allowed.length - toUpload.length;
+          toast({
+            title: toUpload.length === 0
+              ? 'No files approved'
+              : `AI approved ${toUpload.length} of ${allowed.length} file${allowed.length > 1 ? 's' : ''}`,
+            description: skipped > 0
+              ? `${skipped} file${skipped > 1 ? 's were' : ' was'} filtered out as not property-related.`
+              : 'All files passed screening.',
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Unknown error';
+          toast({ title: 'Screening failed', description: msg, variant: 'destructive' });
+          setIsScreening(false);
+          return;
+        } finally {
+          setIsScreening(false);
         }
-        const { approved } = await screenRes.json() as { approved: string[] };
-        const approvedSet = new Set(approved.map((n: string) => n.toLowerCase()));
-        toUpload = allowed.filter(f => approvedSet.has(f.name.toLowerCase()));
-        const skipped = allowed.length - toUpload.length;
-        toast({
-          title: toUpload.length === 0
-            ? 'No files approved'
-            : `AI approved ${toUpload.length} of ${allowed.length} file${allowed.length > 1 ? 's' : ''}`,
-          description: skipped > 0
-            ? `${skipped} file${skipped > 1 ? 's were' : ' was'} filtered out as not property-related.`
-            : 'All files passed screening.',
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Unknown error';
-        toast({ title: 'Screening failed', description: msg, variant: 'destructive' });
-        setIsScreening(false);
-        return;
-      } finally {
-        setIsScreening(false);
       }
 
       if (toUpload.length === 0) return;
