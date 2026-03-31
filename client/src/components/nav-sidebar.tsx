@@ -110,7 +110,7 @@ function AppSidebar() {
         .catch(() => {});
     };
     fetchCount();
-    const interval = setInterval(fetchCount, 60000);
+    const interval = setInterval(fetchCount, 120000);
     return () => clearInterval(interval);
   }, [user?.role]);
 

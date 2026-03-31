@@ -29,6 +29,7 @@ urlpatterns = [
     path('admin/credit-requests/<int:request_id>/resolve/', views.admin_credit_request_resolve),
     path('admin/documents/', views.admin_documents),
     path('credits/', views.my_credits),
+    path('credits/deduct-translate/', views.deduct_credit_for_translate),
     path('credits/request/', views.credit_request),
     path('credits/request/cancel/', views.credit_request_cancel),
     path('credits/packages/', views.credit_packages),

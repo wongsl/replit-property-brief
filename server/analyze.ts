@@ -815,3 +815,68 @@ export function registerAnalyzeRoutes(app: Express): void {
     }
   });
 }
+
+export function registerTranslateRoute(app: Express): void {
+  app.post("/api/translate/", async (req, res) => {
+    const requestId = (req as any).requestId ?? "-";
+    const cookies = req.headers.cookie || "";
+    try {
+      const { q, target, targetLabel } = req.body as { q: string[]; target: string; targetLabel?: string };
+
+      log(`[translate] req=${requestId} target=${target} strings=${q?.length}`, "translate");
+
+      if (!Array.isArray(q) || q.length === 0 || !target) {
+        log(`[translate] req=${requestId} bad request: q=${JSON.stringify(q)} target=${target}`, "translate");
+        return res.status(400).json({ error: "q (non-empty array) and target language are required" });
+      }
+
+      // Deduct 1 credit before translating
+      const deductRes = await fetch("http://127.0.0.1:8000/api/credits/deduct-translate/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: cookies,
+          "X-Request-Id": requestId,
+        },
+        body: JSON.stringify({ target_language: targetLabel ?? target }),
+      });
+
+      if (!deductRes.ok) {
+        const body = await deductRes.json().catch(() => ({})) as any;
+        const msg = body?.error ?? "Insufficient credits";
+        log(`[translate] req=${requestId} credit deduction failed (${deductRes.status}): ${msg}`, "translate");
+        return res.status(deductRes.status).json({ error: msg });
+      }
+
+      const region = process.env.AWS_REGION || "us-east-1";
+      const hasKey = !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+      log(`[translate] req=${requestId} region=${region} credentials=${hasKey ? "present" : "MISSING"}`, "translate");
+
+      const { TranslateClient, TranslateTextCommand } = await import("@aws-sdk/client-translate");
+      const client = new TranslateClient({ region });
+
+      const translations = await Promise.all(
+        q.map(async (text, i) => {
+          try {
+            const command = new TranslateTextCommand({
+              Text: text,
+              SourceLanguageCode: "auto",
+              TargetLanguageCode: target,
+            });
+            const result = await client.send(command);
+            return result.TranslatedText ?? text;
+          } catch (itemErr: any) {
+            log(`[translate] req=${requestId} item[${i}] error: ${itemErr.message}`, "translate");
+            throw itemErr;
+          }
+        })
+      );
+
+      log(`[translate] req=${requestId} success: translated ${translations.length} strings`, "translate");
+      return res.json({ translations });
+    } catch (err: any) {
+      log(`[translate] req=${requestId} error: ${err.name}: ${err.message}`, "translate");
+      return res.status(500).json({ error: "Translation failed: " + err.message });
+    }
+  });
+}

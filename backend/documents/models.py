@@ -157,6 +157,7 @@ class CreditTransaction(models.Model):
     TYPE_CHOICES = [
         ('analyze', 'Document Analysis'),
         ('folder_combine', 'Folder Combined Analysis'),
+        ('translate', 'Translation'),
         ('admin_grant', 'Admin Grant'),
         ('request_approved', 'Request Approved'),
         ('refund', 'Refund'),

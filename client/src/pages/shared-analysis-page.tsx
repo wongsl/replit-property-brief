@@ -1,8 +1,76 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useParams } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Copy, Check } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Copy, Check, Languages, FileDown, RefreshCw } from "lucide-react";
+
+const TRANSLATE_LANGUAGES = [
+  { code: "es", label: "Spanish" },
+  { code: "zh", label: "Chinese (Simplified)" },
+  { code: "zh-TW", label: "Chinese (Traditional)" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "pt", label: "Portuguese" },
+  { code: "ru", label: "Russian" },
+  { code: "ar", label: "Arabic" },
+  { code: "hi", label: "Hindi" },
+  { code: "vi", label: "Vietnamese" },
+  { code: "tl", label: "Filipino" },
+  { code: "it", label: "Italian" },
+];
+
+function extractStringPaths(obj: any, path: (string | number)[] = []): { path: (string | number)[]; value: string }[] {
+  if (typeof obj === "string" && obj.trim()) return [{ path, value: obj }];
+  if (Array.isArray(obj)) return obj.flatMap((v, i) => extractStringPaths(v, [...path, i]));
+  if (obj && typeof obj === "object") return Object.entries(obj).flatMap(([k, v]) => extractStringPaths(v, [...path, k]));
+  return [];
+}
+
+function applyStringPaths(obj: any, entries: { path: (string | number)[]; value: string }[]): any {
+  const clone = JSON.parse(JSON.stringify(obj));
+  for (const { path, value } of entries) {
+    let curr = clone;
+    for (let i = 0; i < path.length - 1; i++) curr = curr[path[i]];
+    curr[path[path.length - 1]] = value;
+  }
+  return clone;
+}
+
+async function translateSummary(summary: any, targetLang: string, targetLabel: string): Promise<any> {
+  const entries = extractStringPaths(summary);
+  if (entries.length === 0) return summary;
+  const res = await fetch("/api/translate/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ q: entries.map(e => e.value), target: targetLang, targetLabel }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Translation failed");
+  }
+  const { translations } = await res.json();
+  const translated = entries.map((e, i) => ({ path: e.path, value: translations[i] ?? e.value }));
+  return applyStringPaths(summary, translated);
+}
+
+function isNearEndOfLife(endOfLifeText: string | undefined): boolean {
+  if (!endOfLifeText) return false;
+  const t = endOfLifeText.toLowerCase();
+  if (/not\s+near\s+end\s+of\s+life/.test(t)) return false;
+  if (/not\s+(at|past|reached|approaching)\s+end\s+of\s+life/.test(t)) return false;
+  if (/near\s+end\s+of\s+life/.test(t)) return true;
+  if (/approaching\s+end(\s+of\s+life)?/.test(t)) return true;
+  if (/past\s+(its\s+)?end\s+of\s+life/.test(t)) return true;
+  if (/reached\s+end(\s+of(\s+(useful\s+)?life)?)?/.test(t)) return true;
+  if (/end\s+of\s+(useful\s+)?life/.test(t)) return true;
+  if (/^yes\b/.test(t)) return true;
+  const match = t.match(/(\d+)\s*(?:–|-|to)?\s*\d*\s*year/);
+  if (match) return parseInt(match[1], 10) <= 5;
+  return false;
+}
 
 function CopyButton({ getText, className = "" }: { getText: () => string; className?: string }) {
   const [copied, setCopied] = useState(false);
@@ -41,9 +109,10 @@ function formatSectionAsText(title: string, data: any): string {
   return lines.join('\n');
 }
 
-function formatAnalysisAsText(analysis: any): string {
-  const summary = analysis.summary || {};
+function formatAnalysisAsText(analysis: any, overrideSummary?: any, translatedLang?: string | null): string {
+  const summary = overrideSummary ?? (analysis.summary || {});
   const lines: string[] = ['=== Property Information ==='];
+  if (translatedLang) lines.push(`[Translated: ${translatedLang}]`);
   if (analysis.document_type) lines.push(`Type: ${analysis.document_type}`);
   if (analysis.addressNumber) lines.push(`Address: ${analysis.addressNumber} ${analysis.streetName} ${analysis.suffix}`);
   if (analysis.city) lines.push(`City: ${analysis.city}`);
@@ -126,6 +195,13 @@ export default function SharedAnalysisPage() {
   const token = params.token;
   const [data, setData] = useState<{ name: string; ai_analysis: any } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedLang, setSelectedLang] = useState("es");
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translatedSummary, setTranslatedSummary] = useState<any>(null);
+  const [translatedLangLabel, setTranslatedLangLabel] = useState<string | null>(null);
+  const [translateError, setTranslateError] = useState<string | null>(null);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const reportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -137,6 +213,82 @@ export default function SharedAnalysisPage() {
       .then(setData)
       .catch((e) => setError(e.message));
   }, [token]);
+
+  const handleTranslate = async () => {
+    if (!data) return;
+    setIsTranslating(true);
+    setTranslateError(null);
+    const lang = TRANSLATE_LANGUAGES.find(l => l.code === selectedLang)?.label ?? selectedLang;
+    console.log(`[translate] starting: target=${selectedLang} (${lang})`);
+    try {
+      const translated = await translateSummary(data.ai_analysis.summary || {}, selectedLang, lang);
+      console.log(`[translate] success`);
+      setTranslatedSummary(translated);
+      setTranslatedLangLabel(lang);
+    } catch (err: any) {
+      console.error(`[translate] error:`, err);
+      setTranslateError(err.message);
+    }
+    setIsTranslating(false);
+  };
+
+  const handleExportPdf = async () => {
+    if (!data || !reportRef.current) {
+      console.error(`[export-pdf] data or reportRef is null`);
+      setTranslateError("PDF export failed: could not find the report element.");
+      return;
+    }
+    setIsExportingPdf(true);
+    console.log(`[export-pdf] starting`);
+    try {
+      const { toPng } = await import("html-to-image");
+      const { jsPDF } = await import("jspdf");
+      console.log(`[export-pdf] libraries loaded, capturing element via html-to-image`);
+
+      const analysis = data.ai_analysis;
+      const addressStr = [analysis.addressNumber, analysis.streetName, analysis.suffix].filter(Boolean).join(' ');
+
+      const dataUrl = await toPng(reportRef.current, { backgroundColor: "#ffffff", pixelRatio: 2 });
+      console.log(`[export-pdf] capture complete, building PDF`);
+
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise<void>((resolve) => { img.onload = () => resolve(); });
+
+      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
+      const margin = 20;
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = pageWidth - margin * 2;
+      const imgHeight = (img.height * imgWidth) / img.width;
+      const availableHeight = pageHeight - margin * 2;
+
+      let srcY = 0;
+      while (srcY < img.height) {
+        const sliceImgHeight = Math.min(img.height - srcY, availableHeight * (img.height / imgHeight));
+        const slicePdfHeight = sliceImgHeight * (imgWidth / img.width);
+        const sliceCanvas = document.createElement("canvas");
+        sliceCanvas.width = img.width;
+        sliceCanvas.height = Math.ceil(sliceImgHeight);
+        const ctx = sliceCanvas.getContext("2d")!;
+        ctx.drawImage(img, 0, -srcY, img.width, img.height);
+        pdf.addImage(sliceCanvas.toDataURL("image/png"), "PNG", margin, margin, imgWidth, slicePdfHeight);
+        srcY += sliceImgHeight;
+        if (srcY < img.height) pdf.addPage();
+      }
+
+      const langSuffix = translatedLangLabel ? ` - ${translatedLangLabel}` : "";
+      const fileName = addressStr
+        ? `${addressStr} - Property Brief${langSuffix}.pdf`
+        : `Property Brief${langSuffix}.pdf`;
+      console.log(`[export-pdf] saving as: "${fileName}" (${pdf.getNumberOfPages()} pages)`);
+      pdf.save(fileName);
+    } catch (err: any) {
+      console.error(`[export-pdf] error:`, err);
+      setTranslateError("PDF export failed: " + err.message);
+    }
+    setIsExportingPdf(false);
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -156,17 +308,18 @@ export default function SharedAnalysisPage() {
         )}
         {data && (() => {
           const analysis = data.ai_analysis;
-          const summary = analysis.summary || {};
+          const summary = translatedSummary ?? (analysis.summary || {});
           const mainSections = ["Roof", "Electrical", "Plumbing", "Foundation", "HVAC"];
           const otherSections = ["Permits", "Pest Inspection"];
           return (
             <div className="space-y-4">
+              <div ref={reportRef} className="space-y-4 bg-background">
               <div className="rounded-lg border bg-primary/5 p-4 space-y-2">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-bold text-primary">Property Information</h3>
                   <div className="flex items-center gap-2">
                     {analysis.document_type && <Badge variant="secondary" className="text-[10px]">{analysis.document_type}</Badge>}
-                    <CopyButton getText={() => formatAnalysisAsText(analysis)} />
+                    <CopyButton getText={() => formatAnalysisAsText(analysis, translatedSummary ?? undefined, translatedLangLabel)} />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
@@ -180,7 +333,48 @@ export default function SharedAnalysisPage() {
               </div>
 
               <div className="space-y-3">
-                <h3 className="text-sm font-bold">Inspection Summary</h3>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <h3 className="text-sm font-bold">
+                    Inspection Summary
+                    {translatedLangLabel && <span className="ml-2 text-[10px] font-normal text-muted-foreground">({translatedLangLabel})</span>}
+                  </h3>
+                  <div className="flex items-center gap-1.5">
+                    <Select value={selectedLang} onValueChange={(v) => { setSelectedLang(v); setTranslatedSummary(null); setTranslatedLangLabel(null); }}>
+                      <SelectTrigger className="h-6 text-[10px] w-36 px-2">
+                        <Languages className="h-3 w-3 mr-1 shrink-0" />
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {TRANSLATE_LANGUAGES.map(l => (
+                          <SelectItem key={l.code} value={l.code} className="text-xs">{l.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      variant="outline" size="sm"
+                      className="h-6 gap-1.5 px-2 text-[10px]"
+                      onClick={handleTranslate}
+                      disabled={isTranslating}
+                    >
+                      {isTranslating
+                        ? <><RefreshCw className="h-3 w-3 animate-spin" />Translating…</>
+                        : <><Languages className="h-3 w-3" />Translate (1 credit)</>}
+                    </Button>
+                    <Button
+                      variant="outline" size="sm"
+                      className="h-6 gap-1.5 px-2 text-[10px]"
+                      onClick={handleExportPdf}
+                      disabled={isExportingPdf}
+                    >
+                      {isExportingPdf
+                        ? <><RefreshCw className="h-3 w-3 animate-spin" />Exporting…</>
+                        : <><FileDown className="h-3 w-3" />Export PDF</>}
+                    </Button>
+                  </div>
+                </div>
+                {translateError && (
+                  <p className="text-xs text-destructive">{translateError}</p>
+                )}
                 <div className="grid grid-cols-1 gap-3">
                   {mainSections.map(section => summary[section] && (
                     <InspectionSection key={section} title={section} data={summary[section]} />
@@ -192,6 +386,7 @@ export default function SharedAnalysisPage() {
                 {summary["Additional Notes"] && (
                   <InspectionSection title="Additional Notes" data={summary["Additional Notes"]} />
                 )}
+              </div>
               </div>
             </div>
           );

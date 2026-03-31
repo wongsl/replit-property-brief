@@ -918,6 +918,26 @@ def admin_application_resolve(request, application_id):
 
 # --- Credit Views ---
 
+@api_view(['POST'])
+def deduct_credit_for_translate(request):
+    """Deduct 1 credit for a translation. Called by the Express translate endpoint."""
+    target_language = request.data.get('target_language', '')
+    with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=request.user.pk)
+        if user.credits < 1:
+            return Response({'error': 'Insufficient credits. Purchase more credits to continue translating.'}, status=402)
+        user.credits -= 1
+        user.save(update_fields=['credits'])
+        CreditTransaction.objects.create(
+            user=user,
+            type='translate',
+            amount=-1,
+            note=f'Translation to {target_language}' if target_language else 'Translation',
+        )
+    invalidate_user(request.user.id)
+    return Response({'credits': user.credits})
+
+
 @api_view(['GET'])
 def my_credits(request):
     """Return the current user's credit balance and recent transactions."""

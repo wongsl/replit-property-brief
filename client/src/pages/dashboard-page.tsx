@@ -14,7 +14,7 @@ import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
   ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, Minus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
-  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail, Share2, Pencil, Archive, ArchiveRestore, UserPlus
+  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail, Share2, Pencil, Archive, ArchiveRestore, UserPlus, Languages, FileDown
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -2270,9 +2270,10 @@ function formatSectionAsText(title: string, data: any): string {
   return lines.join('\n');
 }
 
-function formatAnalysisAsText(analysis: any): string {
-  const summary = analysis.summary || {};
+function formatAnalysisAsText(analysis: any, overrideSummary?: any, translatedLang?: string | null): string {
+  const summary = overrideSummary ?? (analysis.summary || {});
   const lines: string[] = ['=== Property Information ==='];
+  if (translatedLang) lines.push(`[Translated: ${translatedLang}]`);
   if (analysis.document_type) lines.push(`Type: ${analysis.document_type}`);
   if (analysis.addressNumber) lines.push(`Address: ${analysis.addressNumber} ${analysis.streetName} ${analysis.suffix}`);
   if (analysis.city) lines.push(`City: ${analysis.city}`);
@@ -2433,15 +2434,72 @@ function InspectionSection({ title, data }: { title: string; data: any }) {
   );
 }
 
+const TRANSLATE_LANGUAGES = [
+  { code: "es", label: "Spanish" },
+  { code: "zh", label: "Chinese (Simplified)" },
+  { code: "zh-TW", label: "Chinese (Traditional)" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "pt", label: "Portuguese" },
+  { code: "ru", label: "Russian" },
+  { code: "ar", label: "Arabic" },
+  { code: "hi", label: "Hindi" },
+  { code: "vi", label: "Vietnamese" },
+  { code: "tl", label: "Filipino" },
+  { code: "it", label: "Italian" },
+];
+
+function extractStringPaths(obj: any, path: (string | number)[] = []): { path: (string | number)[]; value: string }[] {
+  if (typeof obj === "string" && obj.trim()) return [{ path, value: obj }];
+  if (Array.isArray(obj)) return obj.flatMap((v, i) => extractStringPaths(v, [...path, i]));
+  if (obj && typeof obj === "object") return Object.entries(obj).flatMap(([k, v]) => extractStringPaths(v, [...path, k]));
+  return [];
+}
+
+function applyStringPaths(obj: any, entries: { path: (string | number)[]; value: string }[]): any {
+  const clone = JSON.parse(JSON.stringify(obj));
+  for (const { path, value } of entries) {
+    let curr = clone;
+    for (let i = 0; i < path.length - 1; i++) curr = curr[path[i]];
+    curr[path[path.length - 1]] = value;
+  }
+  return clone;
+}
+
+async function translateAnalysis(summary: any, targetLang: string, targetLabel: string): Promise<any> {
+  const entries = extractStringPaths(summary);
+  if (entries.length === 0) return summary;
+  const res = await apiFetch("/api/translate/", {
+    method: "POST",
+    body: JSON.stringify({ q: entries.map(e => e.value), target: targetLang, targetLabel }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Translation failed");
+  }
+  const { translations } = await res.json();
+  const translated = entries.map((e, i) => ({ path: e.path, value: translations[i] ?? e.value }));
+  return applyStringPaths(summary, translated);
+}
+
 function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, onShare, onCreateFolder, folders }: { analysis: any; emailDraft?: string; onDraftEmail?: () => void; isDraftingEmail?: boolean; onShare?: () => Promise<string>; onCreateFolder?: (name: string) => Promise<void>; folders?: Array<{id: number; name: string}> }) {
   const summary = analysis.summary || {};
   const mainSections = ["Roof", "Electrical", "Plumbing", "Foundation", "HVAC"];
   const otherSections = ["Permits", "Pest Inspection"];
+  const { toast } = useToast();
   const [showEmailDialog, setShowEmailDialog] = useState(false);
   const [emailCopied, setEmailCopied] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [showFolderPanel, setShowFolderPanel] = useState(false);
+  const [selectedLang, setSelectedLang] = useState("es");
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translatedSummary, setTranslatedSummary] = useState<any>(null);
+  const [translatedLangLabel, setTranslatedLangLabel] = useState<string | null>(null);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const reportRef = useRef<HTMLDivElement>(null);
   const addressStr = [analysis.addressNumber, analysis.streetName, analysis.suffix].filter(Boolean).join(' ');
   const matchingFolder = useMemo(() => folders?.find(f => f.name.toLowerCase() === addressStr.toLowerCase()), [folders, addressStr]);
   const [selectedFolderId, setSelectedFolderId] = useState<string>(() => matchingFolder ? String(matchingFolder.id) : '__new__');
@@ -2488,6 +2546,78 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, o
     }
   };
 
+  const handleTranslate = async () => {
+    setIsTranslating(true);
+    const lang = TRANSLATE_LANGUAGES.find(l => l.code === selectedLang)?.label ?? selectedLang;
+    console.log(`[translate] starting: target=${selectedLang} (${lang})`);
+    try {
+      const translated = await translateAnalysis(analysis.summary || {}, selectedLang, lang);
+      console.log(`[translate] success`);
+      setTranslatedSummary(translated);
+      setTranslatedLangLabel(lang);
+    } catch (err: any) {
+      console.error(`[translate] error:`, err);
+      toast({ title: "Translation failed", description: err.message, variant: "destructive" });
+    }
+    setIsTranslating(false);
+  };
+
+  const handleExportPdf = async () => {
+    if (!reportRef.current) {
+      console.error(`[export-pdf] reportRef is null`);
+      toast({ title: "PDF export failed", description: "Could not find the report element.", variant: "destructive" });
+      return;
+    }
+    setIsExportingPdf(true);
+    console.log(`[export-pdf] starting`);
+    try {
+      const { toPng } = await import("html-to-image");
+      const { jsPDF } = await import("jspdf");
+      console.log(`[export-pdf] libraries loaded, capturing element via html-to-image`);
+
+      const dataUrl = await toPng(reportRef.current, { backgroundColor: "#ffffff", pixelRatio: 2 });
+      console.log(`[export-pdf] capture complete, building PDF`);
+
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise<void>((resolve) => { img.onload = () => resolve(); });
+
+      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
+      const margin = 20;
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = pageWidth - margin * 2;
+      const imgHeight = (img.height * imgWidth) / img.width;
+      const availableHeight = pageHeight - margin * 2;
+
+      // Slice the image across pages
+      let srcY = 0;
+      while (srcY < img.height) {
+        const sliceImgHeight = Math.min(img.height - srcY, availableHeight * (img.height / imgHeight));
+        const slicePdfHeight = sliceImgHeight * (imgWidth / img.width);
+        const sliceCanvas = document.createElement("canvas");
+        sliceCanvas.width = img.width;
+        sliceCanvas.height = Math.ceil(sliceImgHeight);
+        const ctx = sliceCanvas.getContext("2d")!;
+        ctx.drawImage(img, 0, -srcY, img.width, img.height);
+        pdf.addImage(sliceCanvas.toDataURL("image/png"), "PNG", margin, margin, imgWidth, slicePdfHeight);
+        srcY += sliceImgHeight;
+        if (srcY < img.height) pdf.addPage();
+      }
+
+      const langSuffix = translatedLangLabel ? ` - ${translatedLangLabel}` : "";
+      const fileName = addressStr
+        ? `${addressStr} - Property Brief${langSuffix}.pdf`
+        : `Property Brief${langSuffix}.pdf`;
+      console.log(`[export-pdf] saving as: "${fileName}" (${pdf.getNumberOfPages()} pages)`);
+      pdf.save(fileName);
+    } catch (err: any) {
+      console.error(`[export-pdf] error:`, err);
+      toast({ title: "PDF export failed", description: err.message, variant: "destructive" });
+    }
+    setIsExportingPdf(false);
+  };
+
   const handleCopy = () => {
     if (emailDraft) navigator.clipboard.writeText(emailDraft);
     setEmailCopied(true);
@@ -2507,12 +2637,15 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, o
     }
   };
 
+  const displaySummary = translatedSummary ?? summary;
+
   return (
     <div className="space-y-4" data-testid="analysis-report">
+      <div ref={reportRef} className="space-y-4 bg-background">
       <div className="rounded-lg border bg-primary/5 p-4 space-y-2">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-bold text-primary">Property Information</h3>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             {analysis.document_type && <Badge variant="secondary" className="text-[10px]">{analysis.document_type}</Badge>}
             {onDraftEmail && (
               <Button
@@ -2542,7 +2675,7 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, o
                     : <><Share2 className="h-3 w-3" />Share</>}
               </Button>
             )}
-            <CopyButton getText={() => formatAnalysisAsText(analysis)} />
+            <CopyButton getText={() => formatAnalysisAsText(analysis, displaySummary, translatedLangLabel)} />
             {onCreateFolder && (
               <Button
                 variant="outline" size="sm"
@@ -2594,23 +2727,62 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, o
       </div>
 
       <div className="space-y-3">
-        <h3 className="text-sm font-bold">Inspection Summary</h3>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <h3 className="text-sm font-bold">
+            Inspection Summary
+            {translatedLangLabel && <span className="ml-2 text-[10px] font-normal text-muted-foreground">({translatedLangLabel})</span>}
+          </h3>
+          <div className="flex items-center gap-1.5">
+            <Select value={selectedLang} onValueChange={(v) => { setSelectedLang(v); setTranslatedSummary(null); setTranslatedLangLabel(null); }}>
+              <SelectTrigger className="h-6 text-[10px] w-36 px-2">
+                <Languages className="h-3 w-3 mr-1 shrink-0" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TRANSLATE_LANGUAGES.map(l => (
+                  <SelectItem key={l.code} value={l.code} className="text-xs">{l.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline" size="sm"
+              className="h-6 gap-1.5 px-2 text-[10px]"
+              onClick={handleTranslate}
+              disabled={isTranslating}
+            >
+              {isTranslating
+                ? <><RefreshCw className="h-3 w-3 animate-spin" />Translating…</>
+                : <><Languages className="h-3 w-3" />Translate (1 credit)</>}
+            </Button>
+            <Button
+              variant="outline" size="sm"
+              className="h-6 gap-1.5 px-2 text-[10px]"
+              onClick={handleExportPdf}
+              disabled={isExportingPdf}
+            >
+              {isExportingPdf
+                ? <><RefreshCw className="h-3 w-3 animate-spin" />Exporting…</>
+                : <><FileDown className="h-3 w-3" />Export PDF</>}
+            </Button>
+          </div>
+        </div>
         {analysis.conflict_notes && (
           <div className="rounded-md border border-yellow-400/40 bg-yellow-500/10 px-4 py-3 text-xs text-yellow-700">
             <span className="font-semibold">Conflict notes: </span>{analysis.conflict_notes}
           </div>
         )}
         <div className="grid grid-cols-1 gap-3">
-          {mainSections.map(section => summary[section] && (
-            <InspectionSection key={section} title={section} data={summary[section]} />
+          {mainSections.map(section => displaySummary[section] && (
+            <InspectionSection key={section} title={section} data={displaySummary[section]} />
           ))}
         </div>
-        {otherSections.map(section => summary[section] && (
-          <InspectionSection key={section} title={section} data={summary[section]} />
+        {otherSections.map(section => displaySummary[section] && (
+          <InspectionSection key={section} title={section} data={displaySummary[section]} />
         ))}
-        {summary["Additional Notes"] && (
-          <InspectionSection title="Additional Notes" data={summary["Additional Notes"]} />
+        {displaySummary["Additional Notes"] && (
+          <InspectionSection title="Additional Notes" data={displaySummary["Additional Notes"]} />
         )}
+      </div>
       </div>
 
       <Dialog open={showEmailDialog} onOpenChange={setShowEmailDialog}>
