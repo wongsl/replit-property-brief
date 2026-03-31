@@ -60,18 +60,12 @@ class CombinedAnalysisSerializer(serializers.ModelSerializer):
                   'combined_analysis', 'is_favorited', 'created_at']
 
 
-class CombinedAnalysisSummarySerializer(CombinedAnalysisSerializer):
-    """Like CombinedAnalysisSerializer but omits combined_analysis body for folder list responses."""
-    class Meta(CombinedAnalysisSerializer.Meta):
-        fields = [f for f in CombinedAnalysisSerializer.Meta.fields if f != 'combined_analysis']
-
-
 class FolderSerializer(serializers.ModelSerializer):
     document_count = serializers.IntegerField(read_only=True, default=0)
     parent_name = serializers.CharField(source='parent.name', read_only=True, default=None)
     full_path = serializers.CharField(read_only=True)
     children = serializers.SerializerMethodField()
-    combined_analyses = CombinedAnalysisSummarySerializer(many=True, read_only=True)
+    combined_analyses = CombinedAnalysisSerializer(many=True, read_only=True)
     is_favorited = serializers.SerializerMethodField()
 
     class Meta:
