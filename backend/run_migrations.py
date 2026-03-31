@@ -142,6 +142,23 @@ cur2.close()
 conn2.close()
 print("Sequences reset.", flush=True)
 
+# ── Step 1c: ensure Django database cache table exists ──
+print("Ensuring cache table...", flush=True)
+conn3 = psycopg2.connect(os.environ["DATABASE_URL"])
+conn3.autocommit = True
+cur3 = conn3.cursor()
+cur3.execute("""
+    CREATE TABLE IF NOT EXISTS django_cache (
+        cache_key varchar(255) NOT NULL PRIMARY KEY,
+        value     text        NOT NULL,
+        expires   double precision NOT NULL
+    );
+""")
+cur3.execute("CREATE INDEX IF NOT EXISTS django_cache_expires_idx ON django_cache (expires);")
+cur3.close()
+conn3.close()
+print("Cache table ensured.", flush=True)
+
 # ── Step 2: mark migrations 0006-0012 as applied if not already recorded ──
 # Insert each record only if it isn't already present. We do NOT use
 # `migrate --fake` to a specific version because that unapplies any newer

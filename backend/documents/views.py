@@ -9,13 +9,13 @@ from django.contrib.auth.hashers import make_password, check_password
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import transaction as db_transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Exists, OuterRef
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from .models import Team, Folder, Tag, Document, DocumentPermission, TeamJoinRequest, AdminRequest, CreditTransaction, CreditRequest, CombinedAnalysis, PasswordResetToken, FeatureFlag
 from .serializers import (
     UserSerializer, TeamSerializer, FolderSerializer, TagSerializer,
-    DocumentSerializer, DocumentPermissionSerializer, TeamJoinRequestSerializer, AdminRequestSerializer,
+    DocumentSerializer, DocumentListSerializer, DocumentPermissionSerializer, TeamJoinRequestSerializer, AdminRequestSerializer,
     CreditTransactionSerializer, CreditRequestSerializer, CombinedAnalysisSerializer, FeatureFlagSerializer
 )
 from .cache_utils import (
@@ -267,11 +267,14 @@ class FolderViewSet(viewsets.ModelViewSet):
     serializer_class = FolderSerializer
 
     def get_queryset(self):
-        qs = Folder.objects.filter(owner=self.request.user).select_related('parent').prefetch_related(
+        user = self.request.user
+        fav_subquery = user.favorite_folders.filter(pk=OuterRef('pk'))
+        qs = Folder.objects.filter(owner=user).select_related('parent').prefetch_related(
             'children', 'children__children', 'children__children__children',
             'combined_analyses', 'combined_analyses__source_documents',
         ).annotate(
-            document_count=Count('documents')
+            document_count=Count('documents'),
+            is_favorited_ann=Exists(fav_subquery),
         )
         if self.action == 'list':
             archived = self.request.query_params.get('archived', None)
@@ -373,8 +376,17 @@ class FolderViewSet(viewsets.ModelViewSet):
 class DocumentViewSet(viewsets.ModelViewSet):
     serializer_class = DocumentSerializer
 
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return DocumentListSerializer
+        return DocumentSerializer
+
     def get_queryset(self):
-        qs = Document.objects.select_related('owner', 'folder', 'folder__parent', 'folder__parent__parent').prefetch_related('tags')
+        user = self.request.user
+        fav_subquery = user.favorite_documents.filter(pk=OuterRef('pk'))
+        qs = Document.objects.select_related('owner', 'folder', 'folder__parent', 'folder__parent__parent') \
+            .prefetch_related('tags') \
+            .annotate(is_favorited_ann=Exists(fav_subquery))
         scope = self.request.query_params.get('scope', 'mine')
         if scope == 'team' and self.request.user.team:
             qs = qs.filter(team=self.request.user.team, is_private=False)

@@ -44,11 +44,11 @@ function Router() {
   return (
     <Switch>
       <Route path="/auth">
-        {loading ? null : serverError ? <ServerStartingScreen /> : user ? <Redirect to="/dashboard" /> : <AuthPage />}
+        {loading ? <div className="flex min-h-screen items-center justify-center"><p className="text-muted-foreground">Loading...</p></div> : serverError ? <ServerStartingScreen /> : user ? <Redirect to="/dashboard" /> : <AuthPage />}
       </Route>
-      
+
       <Route path="/">
-        {loading ? null : serverError ? <ServerStartingScreen /> : user ? <Redirect to="/dashboard" /> : <Redirect to="/auth" />}
+        {loading ? <div className="flex min-h-screen items-center justify-center"><p className="text-muted-foreground">Loading...</p></div> : serverError ? <ServerStartingScreen /> : user ? <Redirect to="/dashboard" /> : <Redirect to="/auth" />}
       </Route>
 
       <Route path="/dashboard">

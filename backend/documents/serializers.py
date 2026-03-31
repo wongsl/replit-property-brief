@@ -47,6 +47,8 @@ class CombinedAnalysisSerializer(serializers.ModelSerializer):
         return [{'id': d.id, 'name': d.name} for d in obj.source_documents.all()]
 
     def get_is_favorited(self, obj):
+        if hasattr(obj, 'is_favorited_ann'):
+            return obj.is_favorited_ann
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.favorited_by.filter(pk=request.user.pk).exists()
@@ -58,12 +60,18 @@ class CombinedAnalysisSerializer(serializers.ModelSerializer):
                   'combined_analysis', 'is_favorited', 'created_at']
 
 
+class CombinedAnalysisSummarySerializer(CombinedAnalysisSerializer):
+    """Like CombinedAnalysisSerializer but omits combined_analysis body for folder list responses."""
+    class Meta(CombinedAnalysisSerializer.Meta):
+        fields = [f for f in CombinedAnalysisSerializer.Meta.fields if f != 'combined_analysis']
+
+
 class FolderSerializer(serializers.ModelSerializer):
     document_count = serializers.IntegerField(read_only=True, default=0)
     parent_name = serializers.CharField(source='parent.name', read_only=True, default=None)
     full_path = serializers.CharField(read_only=True)
     children = serializers.SerializerMethodField()
-    combined_analyses = CombinedAnalysisSerializer(many=True, read_only=True)
+    combined_analyses = CombinedAnalysisSummarySerializer(many=True, read_only=True)
     is_favorited = serializers.SerializerMethodField()
 
     class Meta:
@@ -76,6 +84,8 @@ class FolderSerializer(serializers.ModelSerializer):
         return FolderSerializer(children, many=True, context=self.context).data
 
     def get_is_favorited(self, obj):
+        if hasattr(obj, 'is_favorited_ann'):
+            return obj.is_favorited_ann
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.favorited_by.filter(pk=request.user.pk).exists()
@@ -93,6 +103,8 @@ class DocumentSerializer(serializers.ModelSerializer):
         return None
 
     def get_is_favorited(self, obj):
+        if hasattr(obj, 'is_favorited_ann'):
+            return obj.is_favorited_ann
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.favorited_by.filter(pk=request.user.pk).exists()
@@ -110,6 +122,12 @@ class DocumentSerializer(serializers.ModelSerializer):
             'share_token', 'created_at', 'updated_at'
         ]
         read_only_fields = ['owner', 'owner_name', 'file_size', 'status', 'share_token']
+
+
+class DocumentListSerializer(DocumentSerializer):
+    """Like DocumentSerializer but omits ai_analysis for list endpoints (reduces payload size)."""
+    class Meta(DocumentSerializer.Meta):
+        fields = [f for f in DocumentSerializer.Meta.fields if f != 'ai_analysis']
 
 
 class AdminDocumentSerializer(serializers.ModelSerializer):
