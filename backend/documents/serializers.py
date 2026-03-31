@@ -125,9 +125,10 @@ class DocumentSerializer(serializers.ModelSerializer):
 
 
 class DocumentListSerializer(DocumentSerializer):
-    """Like DocumentSerializer but omits ai_analysis for list endpoints (reduces payload size)."""
+    """Like DocumentSerializer but omits heavy text fields (notes, email_draft) for list endpoints.
+    ai_analysis is kept because the dashboard uses it to render analysis results inline."""
     class Meta(DocumentSerializer.Meta):
-        fields = [f for f in DocumentSerializer.Meta.fields if f != 'ai_analysis']
+        fields = [f for f in DocumentSerializer.Meta.fields if f not in ('notes', 'email_draft')]
 
 
 class AdminDocumentSerializer(serializers.ModelSerializer):

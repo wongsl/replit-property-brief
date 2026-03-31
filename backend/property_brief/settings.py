@@ -77,13 +77,24 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
-        'LOCATION': 'django_cache',
-        'TIMEOUT': 300,
+if DEBUG:
+    # LocMemCache requires no setup — suitable for local development (single process)
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'property-brief-cache',
+            'TIMEOUT': 300,
+        }
     }
-}
+else:
+    # DatabaseCache is shared across all gunicorn workers in production
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+            'LOCATION': 'django_cache',
+            'TIMEOUT': 300,
+        }
+    }
 
 LOGGING = {
     'version': 1,

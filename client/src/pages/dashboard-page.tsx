@@ -207,7 +207,7 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
   const loadData = async () => {
     const scope = activeTab === "team-files" ? "team" : "mine";
     const [docsRes, foldersRes, archivedRes, sharedRes] = await Promise.all([
-      apiFetch(`/api/documents/?scope=${scope}&days=7`),
+      apiFetch(`/api/documents/?scope=${scope}`),
       apiFetch('/api/folders/'),
       apiFetch('/api/folders/?archived=true'),
       apiFetch('/api/documents/shared_with_me/'),
