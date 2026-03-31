@@ -106,6 +106,42 @@ cur.execute("""
 
 print("Schema patch complete.", flush=True)
 
+# ── Step 1b: reset all sequences to MAX(id) to fix any desync ──
+# This self-heals the "duplicate key value violates unique constraint *_pkey"
+# error that occurs when rows were inserted with explicit IDs without advancing
+# the sequence (e.g. after a DB restore or migration replay).
+print("Resetting sequences...", flush=True)
+_tables = [
+    "folders",
+    "documents",
+    "users",
+    "teams",
+    "tags",
+    "team_join_requests",
+    "admin_requests",
+    "combined_analyses",
+    "credit_transactions",
+    "credit_requests",
+    "feature_flags",
+    "password_reset_tokens",
+    "document_permissions",
+]
+conn2 = psycopg2.connect(os.environ["DATABASE_URL"])
+conn2.autocommit = True
+cur2 = conn2.cursor()
+for _table in _tables:
+    cur2.execute(f"""
+        SELECT setval(
+            pg_get_serial_sequence('{_table}', 'id'),
+            COALESCE((SELECT MAX(id) FROM {_table}), 0) + 1,
+            false
+        );
+    """)
+    print(f"  reset sequence for {_table}", flush=True)
+cur2.close()
+conn2.close()
+print("Sequences reset.", flush=True)
+
 # ── Step 2: mark migrations 0006-0012 as applied if not already recorded ──
 # Insert each record only if it isn't already present. We do NOT use
 # `migrate --fake` to a specific version because that unapplies any newer
