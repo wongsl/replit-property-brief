@@ -319,7 +319,7 @@ export default function ExplorerPage() {
           <TableRow className="bg-muted/30 hover:bg-muted/40">
             <TableCell colSpan={7} className="p-0">
               <div className="px-6 py-4 max-h-[500px] overflow-auto">
-                <AnalysisReport analysis={file.ai_analysis} />
+                <AnalysisReport analysis={file.ai_analysis} documentId={file.id} />
               </div>
             </TableCell>
           </TableRow>

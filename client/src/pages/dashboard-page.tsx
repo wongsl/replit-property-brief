@@ -14,7 +14,7 @@ import {
   FileIcon, UploadCloud, RefreshCw, Search, MoreHorizontal,
   FileText, FileImage, FileCode, Download, Users, Sparkles,
   ArrowUpDown, LayoutDashboard, FolderOpen, GripVertical, Plus, Minus, ChevronRight, ChevronDown, Tag, X, FolderPlus, Folder, Trash2,
-  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail, Share2, Pencil, Archive, ArchiveRestore, UserPlus, Languages, FileDown
+  EyeOff, Lock, Coins, Copy, Check, Star, StickyNote, Layers, Mail, Share2, Pencil, Archive, ArchiveRestore, UserPlus, Languages, FileDown, MapPin
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -1992,7 +1992,7 @@ function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedE
         <TableRow className="bg-indigo-500/5 hover:bg-indigo-500/5">
           <TableCell colSpan={9} className="p-0">
             <div className="px-6 py-4 max-h-[500px] overflow-auto space-y-3">
-              <AnalysisReport analysis={ca} />
+              <AnalysisReport analysis={ca} combinedAnalysisId={record.id} />
             </div>
           </TableCell>
         </TableRow>
@@ -2185,6 +2185,7 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
             <div className="px-6 py-4 max-h-[500px] overflow-auto">
               <AnalysisReport
                 analysis={file.ai_analysis}
+                documentId={file.id}
                 emailDraft={file.email_draft}
                 onDraftEmail={() => handleDraftEmail(file.id)}
                 isDraftingEmail={isDraftingEmail && draftEmailDocId === file.id}
@@ -2484,7 +2485,7 @@ async function translateAnalysis(summary: any, targetLang: string, targetLabel: 
   return applyStringPaths(summary, translated);
 }
 
-function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, onShare, onCreateFolder, folders }: { analysis: any; emailDraft?: string; onDraftEmail?: () => void; isDraftingEmail?: boolean; onShare?: () => Promise<string>; onCreateFolder?: (name: string) => Promise<void>; folders?: Array<{id: number; name: string}> }) {
+function AnalysisReport({ analysis, documentId, combinedAnalysisId, emailDraft, onDraftEmail, isDraftingEmail, onShare, onCreateFolder, folders }: { analysis: any; documentId?: number; combinedAnalysisId?: number; emailDraft?: string; onDraftEmail?: () => void; isDraftingEmail?: boolean; onShare?: () => Promise<string>; onCreateFolder?: (name: string) => Promise<void>; folders?: Array<{id: number; name: string}> }) {
   const summary = analysis.summary || {};
   const mainSections = ["Roof", "Electrical", "Plumbing", "Foundation", "HVAC"];
   const otherSections = ["Permits", "Pest Inspection"];
@@ -2499,6 +2500,8 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, o
   const [translatedSummary, setTranslatedSummary] = useState<any>(null);
   const [translatedLangLabel, setTranslatedLangLabel] = useState<string | null>(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isFetchingLeads, setIsFetchingLeads] = useState(false);
+  const [localLeads, setLocalLeads] = useState<any>(analysis.local_leads ?? null);
   const reportRef = useRef<HTMLDivElement>(null);
   const addressStr = [analysis.addressNumber, analysis.streetName, analysis.suffix].filter(Boolean).join(' ');
   const matchingFolder = useMemo(() => folders?.find(f => f.name.toLowerCase() === addressStr.toLowerCase()), [folders, addressStr]);
@@ -2560,6 +2563,36 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, o
       toast({ title: "Translation failed", description: err.message, variant: "destructive" });
     }
     setIsTranslating(false);
+  };
+
+  const handleFindLeads = async () => {
+    const leadsUrl = documentId != null
+      ? `/api/documents/${documentId}/local-leads/`
+      : combinedAnalysisId != null
+        ? `/api/combined-analyses/${combinedAnalysisId}/local-leads/`
+        : null;
+    if (!leadsUrl) {
+      toast({ title: "Cannot find contractors", description: "Analysis ID is missing.", variant: "destructive" });
+      return;
+    }
+    setIsFetchingLeads(true);
+    try {
+      const res = await apiFetch(leadsUrl, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.no_repairs) {
+          toast({ title: "No repairs needed", description: "No issues or repairs were found in the analysis — no contractors needed." });
+        } else {
+          setLocalLeads(data.local_leads);
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: "Could not find contractors", description: err.error || "Please try again.", variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({ title: "Could not find contractors", description: err.message, variant: "destructive" });
+    }
+    setIsFetchingLeads(false);
   };
 
   const handleExportPdf = async () => {
@@ -2782,6 +2815,83 @@ function AnalysisReport({ analysis, emailDraft, onDraftEmail, isDraftingEmail, o
         {displaySummary["Additional Notes"] && (
           <InspectionSection title="Additional Notes" data={displaySummary["Additional Notes"]} />
         )}
+
+        {/* Local Contractors — only shown for individual documents, not combined analyses */}
+        {(documentId != null || combinedAnalysisId != null) && <div className="rounded-lg border bg-card">
+          <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
+            <div className="flex items-center gap-2">
+              <MapPin className="h-3.5 w-3.5 text-primary" />
+              <span className="text-xs font-semibold">Local Contractors</span>
+              {analysis.city && <span className="text-[10px] text-muted-foreground">near {[analysis.city, analysis.county].filter(Boolean).join(', ')}</span>}
+            </div>
+            <Button
+              variant="outline" size="sm"
+              className="h-6 gap-1.5 px-2 text-[10px]"
+              onClick={handleFindLeads}
+              disabled={isFetchingLeads}
+            >
+              {isFetchingLeads
+                ? <><RefreshCw className="h-3 w-3 animate-spin" />Searching…</>
+                : <><MapPin className="h-3 w-3" />{localLeads ? "Refresh (1 credit)" : "Find Contractors (1 credit)"}</>}
+            </Button>
+          </div>
+          {localLeads ? (
+            <div className="p-3 space-y-4">
+              {(["Plumbing", "Electrical", "PestControl", "RoofRepair"] as const).map(category => {
+                const businesses: any[] = localLeads[category] ?? [];
+                if (businesses.length === 0) return null;
+                const label = category === "PestControl" ? "Pest Control" : category === "RoofRepair" ? "Roof Repair" : category;
+                return (
+                  <div key={category}>
+                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">{label}</p>
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="text-[10px]">
+                          <TableHead className="py-1 text-[10px]">Business</TableHead>
+                          <TableHead className="py-1 text-[10px]">Rating</TableHead>
+                          <TableHead className="py-1 text-[10px]">Address</TableHead>
+                          <TableHead className="py-1 text-[10px]">Contact</TableHead>
+                          <TableHead className="py-1 text-[10px]">Signals</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {businesses.map((b: any, i: number) => (
+                          <TableRow key={i} className="text-xs">
+                            <TableCell className="py-1.5 font-medium">
+                              <a
+                                href={`https://www.google.com/search?q=${encodeURIComponent(b.name + (b.address ? ' ' + b.address : ''))}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary hover:underline"
+                              >{b.name}</a>
+                              {b.website && <a href={b.website} target="_blank" rel="noopener noreferrer" className="ml-2 text-[10px] text-muted-foreground hover:underline">website ↗</a>}
+                              {b.reason && <p className="text-[10px] text-muted-foreground font-normal mt-0.5">{b.reason}</p>}
+                            </TableCell>
+                            <TableCell className="py-1.5 whitespace-nowrap">
+                              {b.rating != null ? <span className="font-medium">{b.rating}★</span> : '—'}
+                              {b.review_count != null && <span className="text-muted-foreground text-[10px] ml-1">({b.review_count})</span>}
+                            </TableCell>
+                            <TableCell className="py-1.5 text-muted-foreground text-[10px]">{b.address || '—'}</TableCell>
+                            <TableCell className="py-1.5 text-[10px]">{b.phone || '—'}</TableCell>
+                            <TableCell className="py-1.5">
+                              <div className="flex flex-wrap gap-1">
+                                {(b.lead_signals ?? []).map((s: string, j: number) => (
+                                  <Badge key={j} variant="secondary" className="text-[9px] px-1 py-0">{s}</Badge>
+                                ))}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-[10px] text-muted-foreground px-4 py-3">Click "Find Contractors" to search for local tradespeople near this property.</p>
+          )}
+        </div>}
       </div>
       </div>
 

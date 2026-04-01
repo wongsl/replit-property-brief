@@ -950,6 +950,26 @@ def deduct_credit_for_translate(request):
     return Response({'credits': user.credits})
 
 
+@api_view(['POST'])
+def deduct_credit_for_local_leads(request):
+    """Deduct 1 credit for a local contractor search. Called by the Express local-leads endpoint."""
+    location = request.data.get('location', '')
+    with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=request.user.pk)
+        if user.credits < 1:
+            return Response({'error': 'Insufficient credits. Purchase more credits to find local contractors.'}, status=402)
+        user.credits -= 1
+        user.save(update_fields=['credits'])
+        CreditTransaction.objects.create(
+            user=user,
+            type='local_leads',
+            amount=-1,
+            note=f'Local contractor search near {location}' if location else 'Local contractor search',
+        )
+    invalidate_user(request.user.id)
+    return Response({'credits': user.credits})
+
+
 @api_view(['GET'])
 def my_credits(request):
     """Return the current user's credit balance and recent transactions."""

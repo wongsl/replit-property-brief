@@ -880,3 +880,215 @@ export function registerTranslateRoute(app: Express): void {
     }
   });
 }
+
+function buildLocalLeadsPrompt(categories: string[]): string {
+  return (
+    "You are a local contractor research assistant. Given a property location and a list of trade categories " +
+    "where repairs or issues were found, find the top 3 active businesses for each listed category. " +
+    "For each business, search Google Maps, Yelp, or the contractor's website to find their star rating and review count. " +
+    "You MUST include the numeric rating (e.g. 4.7) and review count (e.g. 83) whenever they appear on Google or Yelp — do not leave these null if the data is publicly available. " +
+    "Rank by: proximity, Google/Yelp rating, review count, review recency, and service relevance. " +
+    "Only include businesses that are currently operating and serve the given location. " +
+    "Respond with ONLY a valid JSON object — no markdown, no commentary. " +
+    `The object must have exactly these keys: ${categories.join(", ")}. ` +
+    "Each key maps to an array of up to 3 objects with these fields: " +
+    "name (string), rating (number or null), review_count (number or null), address (string or null), " +
+    "phone (string or null), website (string or null), reason (string), lead_signals (array of strings). " +
+    "lead_signals examples: 'online booking', 'emergency service', 'same-day service', 'licensed'. " +
+    "If fewer than 3 strong results exist for a category, return only the ones that genuinely qualify. " +
+    "Do NOT include a business if it is not a direct match for the trade category (e.g. do not list a general contractor under PestControl). " +
+    "If no qualifying businesses are found for a category, return an empty array [] for that key — never fabricate or stretch a result to fill the slot."
+  );
+}
+
+/** Returns the trade category keys that have actionable issues in the analysis summary. */
+function categoriesNeedingContractors(summary: any): string[] {
+  const needed: string[] = [];
+
+  const hasIssues = (section: any): boolean => {
+    if (!section) return false;
+    if (Array.isArray(section.issues) && section.issues.length > 0) return true;
+    // Only actionable repair language — exclude "monitor", "age", "concern" which appear in routine descriptions
+    if (section.recommendation && /repair|replac|damage|fail|leak|crack|deteriorat|worn|end.of.life/i.test(section.recommendation)) return true;
+    // "poor" condition is clearly problematic; "fair" is routine and should not trigger contractor search
+    if (section.condition && /poor|damage|deteriorat|fail|crack|leak/i.test(section.condition)) return true;
+    // Match "near end of life", "approaching end", "replacement" but not bare "end"
+    if (section.end_of_life && /near|approach|replac/i.test(section.end_of_life)) return true;
+    return false;
+  };
+
+  if (hasIssues(summary?.Plumbing)) needed.push("Plumbing");
+  if (hasIssues(summary?.Electrical)) needed.push("Electrical");
+  if (hasIssues(summary?.Roof)) needed.push("RoofRepair");
+
+  // Pest: has findings if section_1 or section_2 exist with content
+  const pest = summary?.["Pest Inspection"];
+  if (pest) {
+    const hasSection1 = Array.isArray(pest.section_1?.findings) && pest.section_1.findings.length > 0;
+    const hasSection2 = Array.isArray(pest.section_2?.findings) && pest.section_2.findings.length > 0;
+    if (hasSection1 || hasSection2 || hasIssues(pest)) needed.push("PestControl");
+  }
+
+  return needed;
+}
+
+export function registerLocalLeadsRoute(app: Express): void {
+  let _perplexity: OpenAI | null = null;
+  const perplexity = () => {
+    if (!_perplexity) _perplexity = makePerplexityClient();
+    return _perplexity;
+  };
+
+  app.post("/api/documents/:id/local-leads/", async (req, res) => {
+    const requestId = (req as any).requestId ?? "-";
+    const cookies = req.headers.cookie || "";
+    try {
+      const docId = req.params.id;
+
+      const docRes = await fetch(`http://127.0.0.1:8000/api/documents/${docId}/`, {
+        headers: { Cookie: cookies, "X-Request-Id": requestId },
+      });
+      if (!docRes.ok) return res.status(docRes.status).json({ error: "Document not found" });
+
+      const doc = (await docRes.json()) as any;
+      if (!doc.ai_analysis || doc.ai_analysis.raw_response) {
+        return res.status(400).json({ error: "Document must be analyzed before finding local contractors." });
+      }
+
+      const { city, county, zipcode } = doc.ai_analysis;
+      const location = [city, county, zipcode].filter(Boolean).join(", ");
+      if (!location) {
+        return res.status(400).json({ error: "No location found in analysis. Cannot search for local contractors." });
+      }
+
+      const categories = categoriesNeedingContractors(doc.ai_analysis.summary ?? {});
+      if (categories.length === 0) {
+        log(`[local-leads] req=${requestId} no repairs/issues found — skipping`, "leads");
+        return res.json({ local_leads: {}, no_repairs: true });
+      }
+
+      // Deduct 1 credit before searching
+      const deductRes = await fetch("http://127.0.0.1:8000/api/credits/deduct-local-leads/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookies, "X-Request-Id": requestId },
+        body: JSON.stringify({ location }),
+      });
+      if (!deductRes.ok) {
+        const body = await deductRes.json().catch(() => ({})) as any;
+        const msg = body?.error ?? "Insufficient credits";
+        log(`[local-leads] req=${requestId} credit deduction failed (${deductRes.status}): ${msg}`, "leads");
+        return res.status(deductRes.status).json({ error: msg });
+      }
+
+      log(`[local-leads] req=${requestId} location="${location}" categories=${categories.join(",")}`, "leads");
+
+      const completion = await perplexity().chat.completions.create({
+        model: "sonar-pro",
+        messages: [
+          { role: "system", content: buildLocalLeadsPrompt(categories) },
+          { role: "user", content: `Find local contractors for ${categories.join(", ")} near: ${location}` },
+        ],
+      });
+
+      const raw = completion.choices[0]?.message?.content ?? "";
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        log(`[local-leads] req=${requestId} no JSON in response`, "leads");
+        return res.status(500).json({ error: "Could not parse contractor results." });
+      }
+
+      const leads = JSON.parse(jsonMatch[0]);
+      log(`[local-leads] req=${requestId} success`, "leads");
+
+      // Persist leads into ai_analysis so they survive page refresh
+      const updatedAnalysis = { ...doc.ai_analysis, local_leads: leads };
+      await fetch(`http://127.0.0.1:8000/api/documents/${docId}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: cookies, "X-Request-Id": requestId },
+        body: JSON.stringify({ ai_analysis: updatedAnalysis }),
+      });
+
+      return res.json({ local_leads: leads });
+    } catch (err: any) {
+      log(`[local-leads] req=${requestId} error: ${err.message}`, "leads");
+      return res.status(500).json({ error: "Local leads search failed: " + err.message });
+    }
+  });
+
+  app.post("/api/combined-analyses/:id/local-leads/", async (req, res) => {
+    const requestId = (req as any).requestId ?? "-";
+    const cookies = req.headers.cookie || "";
+    try {
+      const caId = req.params.id;
+
+      const caRes = await fetch(`http://127.0.0.1:8000/api/combined-analyses/${caId}/`, {
+        headers: { Cookie: cookies, "X-Request-Id": requestId },
+      });
+      if (!caRes.ok) return res.status(caRes.status).json({ error: "Combined analysis not found" });
+
+      const record = (await caRes.json()) as any;
+      const ca = record.combined_analysis;
+      if (!ca || !ca.summary) {
+        return res.status(400).json({ error: "Combined analysis has no summary to evaluate." });
+      }
+
+      const { city, county, zipcode } = ca;
+      const location = [city, county, zipcode].filter(Boolean).join(", ");
+      if (!location) {
+        return res.status(400).json({ error: "No location found in combined analysis. Cannot search for local contractors." });
+      }
+
+      const categories = categoriesNeedingContractors(ca.summary ?? {});
+      if (categories.length === 0) {
+        log(`[local-leads/ca] req=${requestId} no repairs/issues found — skipping`, "leads");
+        return res.json({ local_leads: {}, no_repairs: true });
+      }
+
+      // Deduct 1 credit before searching
+      const deductRes = await fetch("http://127.0.0.1:8000/api/credits/deduct-local-leads/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookies, "X-Request-Id": requestId },
+        body: JSON.stringify({ location }),
+      });
+      if (!deductRes.ok) {
+        const body = await deductRes.json().catch(() => ({})) as any;
+        const msg = body?.error ?? "Insufficient credits";
+        log(`[local-leads/ca] req=${requestId} credit deduction failed (${deductRes.status}): ${msg}`, "leads");
+        return res.status(deductRes.status).json({ error: msg });
+      }
+
+      log(`[local-leads/ca] req=${requestId} location="${location}" categories=${categories.join(",")}`, "leads");
+
+      const completion = await perplexity().chat.completions.create({
+        model: "sonar-pro",
+        messages: [
+          { role: "system", content: buildLocalLeadsPrompt(categories) },
+          { role: "user", content: `Find local contractors for ${categories.join(", ")} near: ${location}` },
+        ],
+      });
+
+      const raw = completion.choices[0]?.message?.content ?? "";
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        log(`[local-leads/ca] req=${requestId} no JSON in response`, "leads");
+        return res.status(500).json({ error: "Could not parse contractor results." });
+      }
+
+      const leads = JSON.parse(jsonMatch[0]);
+      log(`[local-leads/ca] req=${requestId} success`, "leads");
+
+      // Persist leads into combined_analysis so they survive page refresh
+      const updatedAnalysis = { ...ca, local_leads: leads };
+      await fetch(`http://127.0.0.1:8000/api/combined-analyses/${caId}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: cookies, "X-Request-Id": requestId },
+        body: JSON.stringify({ combined_analysis: updatedAnalysis }),
+      });
+
+      return res.json({ local_leads: leads });
+    } catch (err: any) {
+      log(`[local-leads/ca] req=${requestId} error: ${err.message}`, "leads");
+      return res.status(500).json({ error: "Local leads search failed: " + err.message });
+    }
+  });
+}

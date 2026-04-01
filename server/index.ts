@@ -23,7 +23,7 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/) || req.path === '/api/screen-files/' || req.path === '/api/translate/';
+  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/documents\/\d+\/local-leads\/?$/) || req.path.match(/^\/api\/combined-analyses\/\d+\/local-leads\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/) || req.path === '/api/screen-files/' || req.path === '/api/translate/';
   const skip = (req.path.startsWith('/api') || req.path.startsWith('/media')) && !isExpressHandled;
   if (skip) {
     return next();
@@ -36,7 +36,7 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/) || req.path === '/api/screen-files/' || req.path === '/api/translate/';
+  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/documents\/\d+\/local-leads\/?$/) || req.path.match(/^\/api\/combined-analyses\/\d+\/local-leads\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/) || req.path === '/api/screen-files/' || req.path === '/api/translate/';
   const skip = (req.path.startsWith('/api') || req.path.startsWith('/media')) && !isExpressHandled;
   if (skip) {
     return next();
@@ -60,7 +60,7 @@ export function log(message: string, source = "express") {
 
 // Fetch user info for Express-handled API routes so it's available for logging
 app.use(async (req, _res, next) => {
-  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/) || req.path === '/api/screen-files/' || req.path === '/api/translate/';
+  const isExpressHandled = req.path.startsWith('/api/uploads') || req.path.match(/^\/api\/documents\/\d+\/analyze\/?$/) || req.path.match(/^\/api\/documents\/\d+\/draft-email\/?$/) || req.path.match(/^\/api\/documents\/\d+\/local-leads\/?$/) || req.path.match(/^\/api\/combined-analyses\/\d+\/local-leads\/?$/) || req.path.match(/^\/api\/folders\/\d+\/combined-analysis\/?$/) || req.path === '/api/screen-files/' || req.path === '/api/translate/';
   if (isExpressHandled && req.headers.cookie) {
     try {
       const meRes = await fetch("http://127.0.0.1:8000/api/auth/me/", {

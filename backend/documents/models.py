@@ -158,6 +158,7 @@ class CreditTransaction(models.Model):
         ('analyze', 'Document Analysis'),
         ('folder_combine', 'Folder Combined Analysis'),
         ('translate', 'Translation'),
+        ('local_leads', 'Local Contractor Search'),
         ('admin_grant', 'Admin Grant'),
         ('request_approved', 'Request Approved'),
         ('refund', 'Refund'),
