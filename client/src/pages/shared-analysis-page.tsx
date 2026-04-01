@@ -234,57 +234,27 @@ export default function SharedAnalysisPage() {
 
   const handleExportPdf = async () => {
     if (!data || !reportRef.current) {
-      console.error(`[export-pdf] data or reportRef is null`);
       setTranslateError("PDF export failed: could not find the report element.");
       return;
     }
     setIsExportingPdf(true);
-    console.log(`[export-pdf] starting`);
     try {
-      const { toPng } = await import("html-to-image");
+      const { toJpeg } = await import("html-to-image");
       const { jsPDF } = await import("jspdf");
-      console.log(`[export-pdf] libraries loaded, capturing element via html-to-image`);
-
       const analysis = data.ai_analysis;
       const addressStr = [analysis.addressNumber, analysis.streetName, analysis.suffix].filter(Boolean).join(' ');
-
-      const dataUrl = await toPng(reportRef.current, { backgroundColor: "#ffffff", pixelRatio: 2 });
-      console.log(`[export-pdf] capture complete, building PDF`);
-
+      const dataUrl = await toJpeg(reportRef.current, { backgroundColor: "#ffffff", pixelRatio: 1, quality: 0.65 });
       const img = new Image();
       img.src = dataUrl;
       await new Promise<void>((resolve) => { img.onload = () => resolve(); });
-
-      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
-      const margin = 20;
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const imgWidth = pageWidth - margin * 2;
-      const imgHeight = (img.height * imgWidth) / img.width;
-      const availableHeight = pageHeight - margin * 2;
-
-      let srcY = 0;
-      while (srcY < img.height) {
-        const sliceImgHeight = Math.min(img.height - srcY, availableHeight * (img.height / imgHeight));
-        const slicePdfHeight = sliceImgHeight * (imgWidth / img.width);
-        const sliceCanvas = document.createElement("canvas");
-        sliceCanvas.width = img.width;
-        sliceCanvas.height = Math.ceil(sliceImgHeight);
-        const ctx = sliceCanvas.getContext("2d")!;
-        ctx.drawImage(img, 0, -srcY, img.width, img.height);
-        pdf.addImage(sliceCanvas.toDataURL("image/png"), "PNG", margin, margin, imgWidth, slicePdfHeight);
-        srcY += sliceImgHeight;
-        if (srcY < img.height) pdf.addPage();
-      }
-
+      const pdfWidth = 612;
+      const pdfHeight = Math.round((img.height / img.width) * pdfWidth);
+      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: [pdfWidth, pdfHeight] });
+      pdf.addImage(dataUrl, "JPEG", 0, 0, pdfWidth, pdfHeight, "", "FAST");
       const langSuffix = translatedLangLabel ? ` - ${translatedLangLabel}` : "";
-      const fileName = addressStr
-        ? `${addressStr} - Property Brief${langSuffix}.pdf`
-        : `Property Brief${langSuffix}.pdf`;
-      console.log(`[export-pdf] saving as: "${fileName}" (${pdf.getNumberOfPages()} pages)`);
+      const fileName = addressStr ? `${addressStr} - Property Brief${langSuffix}.pdf` : `Property Brief${langSuffix}.pdf`;
       pdf.save(fileName);
     } catch (err: any) {
-      console.error(`[export-pdf] error:`, err);
       setTranslateError("PDF export failed: " + err.message);
     }
     setIsExportingPdf(false);

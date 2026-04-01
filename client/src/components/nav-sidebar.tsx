@@ -103,15 +103,10 @@ function AppSidebar() {
 
   useEffect(() => {
     if (user?.role !== 'admin') return;
-    const fetchCount = () => {
-      fetch('/api/admin/credit-requests/', { credentials: 'include' })
-        .then(res => res.ok ? res.json() : [])
-        .then((data: any[]) => setCreditRequestCount(Array.isArray(data) ? data.length : 0))
-        .catch(() => {});
-    };
-    fetchCount();
-    const interval = setInterval(fetchCount, 120000);
-    return () => clearInterval(interval);
+    fetch('/api/admin/credit-requests/', { credentials: 'include' })
+      .then(res => res.ok ? res.json() : [])
+      .then((data: any[]) => setCreditRequestCount(Array.isArray(data) ? data.length : 0))
+      .catch(() => {});
   }, [user?.role]);
 
   const handleMouseEnter = () => {
