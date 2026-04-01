@@ -18,9 +18,9 @@ export default function AuthPage() {
 
         <div className="flex justify-center">
           {mode === "sign-in" ? (
-            <SignIn routing="virtual" fallbackRedirectUrl="/dashboard" />
+            <SignIn routing="virtual" forceRedirectUrl="/dashboard" />
           ) : (
-            <SignUp routing="virtual" fallbackRedirectUrl="/dashboard" />
+            <SignUp routing="virtual" forceRedirectUrl="/dashboard" />
           )}
         </div>
 
