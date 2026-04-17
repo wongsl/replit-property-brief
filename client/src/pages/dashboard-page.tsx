@@ -30,11 +30,17 @@ import {
 } from '@dnd-kit/core';
 import type { CollisionDetection } from '@dnd-kit/core';
 import {
-  arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable,
+  arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, horizontalListSortingStrategy, useSortable,
 } from '@dnd-kit/sortable';
 import {CSS} from '@dnd-kit/utilities';
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+
+const DEFAULT_COLUMN_ORDER = ['name', 'actions', 'city', 'county', 'owner', 'date', 'folder', 'tags', 'score'] as const;
+const COLUMN_LABELS: Record<string, string> = {
+  name: 'Name', actions: 'Actions', city: 'City', county: 'County',
+  owner: 'Owner', date: 'Date', folder: 'Folder', tags: 'Tags', score: 'Score',
+};
 
 async function apiFetch(url: string, options: RequestInit = {}) {
   const res = await fetch(url, {
@@ -139,6 +145,19 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
   const [uploadDestType, setUploadDestType] = useState<'existing' | 'new'>('new');
   const [uploadDestFolderId, setUploadDestFolderId] = useState<number | null>(null);
   const [uploadDestNewName, setUploadDestNewName] = useState('');
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<{ files: File[]; isPrivate: boolean; folderId: number | null | undefined } | null>(null);
+  const [columnOrder, setColumnOrder] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('dashboard-column-order');
+      if (saved) {
+        const parsed: string[] = JSON.parse(saved);
+        const valid = parsed.filter(c => (DEFAULT_COLUMN_ORDER as readonly string[]).includes(c));
+        const missing = DEFAULT_COLUMN_ORDER.filter(c => !valid.includes(c));
+        return [...valid, ...missing];
+      }
+    } catch {}
+    return [...DEFAULT_COLUMN_ORDER];
+  });
   const [selectedFile, setSelectedFile] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [pendingAnalyzeFile, setPendingAnalyzeFile] = useState<any>(null);
@@ -174,11 +193,17 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
   const [shareWithUserDocId, setShareWithUserDocId] = useState<number | null>(null);
   const [allUsers, setAllUsers] = useState<{id: number, username: string}[]>([]);
   const [shareUserSearch, setShareUserSearch] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const PAGE_SIZE = 20;
+  const loadedTabs = useRef<Set<string>>(new Set());
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
+  const columnSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   const customCollisionDetection: CollisionDetection = (args) => {
     const activeId = String(args.active.id);
@@ -204,24 +229,45 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
 
   const flatFolders = useMemo(() => flattenFolders(folders), [folders]);
 
-  const loadData = async () => {
-    const scope = activeTab === "team-files" ? "team" : "mine";
-    const [docsRes, foldersRes, archivedRes, sharedRes] = await Promise.all([
-      apiFetch(`/api/documents/?scope=${scope}`),
+  const loadData = async (tab = activeTab, page = currentPage) => {
+    if (tab === 'archive') {
+      const archivedRes = await apiFetch('/api/folders/?archived=true');
+      if (archivedRes.ok) setArchivedFolders(await archivedRes.json());
+      return;
+    }
+    if (tab === 'shared-with-me') {
+      const sharedRes = await apiFetch('/api/documents/shared_with_me/');
+      if (sharedRes.ok) setSharedDocs(await sharedRes.json());
+      return;
+    }
+    const scope = tab === "team-files" ? "team" : "mine";
+    const [docsRes, foldersRes] = await Promise.all([
+      apiFetch(`/api/documents/?scope=${scope}&page=${page}&page_size=${PAGE_SIZE}`),
       apiFetch('/api/folders/'),
-      apiFetch('/api/folders/?archived=true'),
-      apiFetch('/api/documents/shared_with_me/'),
     ]);
-    if (docsRes.ok) setDocuments(await docsRes.json());
+    if (docsRes.ok) {
+      const data = await docsRes.json();
+      setDocuments(data.results ?? []);
+      setTotalCount(data.count ?? 0);
+      setTotalPages(data.total_pages ?? 1);
+    }
     if (foldersRes.ok) {
       const loadedFolders = await foldersRes.json();
       setFolders(loadedFolders);
     }
-    if (archivedRes.ok) setArchivedFolders(await archivedRes.json());
-    if (sharedRes.ok) setSharedDocs(await sharedRes.json());
   };
 
-  useEffect(() => { loadData(); }, [activeTab]);
+  useEffect(() => {
+    loadedTabs.current.add(activeTab);
+    loadData(activeTab, 1);
+    setCurrentPage(1);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (loadedTabs.current.has(activeTab)) {
+      loadData(activeTab, currentPage);
+    }
+  }, [currentPage]);
 
   useEffect(() => {
     if (folders.length > 0 && !foldersInitialized.current) {
@@ -256,6 +302,10 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
   };
 
   useEffect(() => { loadCreditRequest(); }, []);
+
+  useEffect(() => {
+    localStorage.setItem('dashboard-column-order', JSON.stringify(columnOrder));
+  }, [columnOrder]);
 
   const handleCreditRequest = async () => {
     if (creditRequestAmount < 1 || creditRequestAmount > 10) return;
@@ -608,7 +658,7 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
       }
 
       if (toUpload.length === 0) return;
-      await uploadFiles(toUpload, isPrivate, resolvedFolderId);
+      setPendingUploadFiles({ files: toUpload, isPrivate, folderId: resolvedFolderId });
     };
     input.click();
   };
@@ -1072,6 +1122,7 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
     selectedDocIds, toggleDocSelection,
     expandedCombinedAnalyses, toggleCombinedExpanded, handleDeleteCombinedAnalysis, handleToggleCombinedFavorite,
     handleDraftEmail, isDraftingEmail, draftEmailDocId,
+    columnOrder,
   };
 
   const countDocsInTree = (folder: any): number => {
@@ -1338,24 +1389,35 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
         <Card className="overflow-hidden">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead className="w-[40px]"></TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('name')}>Name <ArrowUpDown className="inline h-3 w-3" /></TableHead>
-                <TableHead>Actions</TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('ai_analysis.city')}>
-                  City {sortConfig?.key === 'ai_analysis.city' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
-                </TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('ai_analysis.county')}>
-                  County {sortConfig?.key === 'ai_analysis.county' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
-                </TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('owner_name')}>Owner <ArrowUpDown className="inline h-3 w-3" /></TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('created_at')}>
-                  Date {sortConfig?.key === 'created_at' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}
-                </TableHead>
-                <TableHead>Folder</TableHead>
-                <TableHead>Tags</TableHead>
-                <TableHead className="cursor-pointer" onClick={() => handleSort('ai_score')}>Score <ArrowUpDown className="inline h-3 w-3" /></TableHead>
-              </TableRow>
+              <DndContext
+                sensors={columnSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={({ active, over }) => {
+                  if (over && active.id !== over.id) {
+                    setColumnOrder(prev => arrayMove(prev, prev.indexOf(active.id as string), prev.indexOf(over.id as string)));
+                  }
+                }}
+              >
+                <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
+                  <TableRow>
+                    <TableHead className="w-[40px]"></TableHead>
+                    {columnOrder.map(colId => {
+                      switch (colId) {
+                        case 'name': return <DraggableColumnHeader key="name" id="name" onClick={() => handleSort('name')}>Name <ArrowUpDown className="inline h-3 w-3" /></DraggableColumnHeader>;
+                        case 'actions': return <DraggableColumnHeader key="actions" id="actions">Actions</DraggableColumnHeader>;
+                        case 'city': return <DraggableColumnHeader key="city" id="city" onClick={() => handleSort('ai_analysis.city')}>City {sortConfig?.key === 'ai_analysis.city' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}</DraggableColumnHeader>;
+                        case 'county': return <DraggableColumnHeader key="county" id="county" onClick={() => handleSort('ai_analysis.county')}>County {sortConfig?.key === 'ai_analysis.county' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}</DraggableColumnHeader>;
+                        case 'owner': return <DraggableColumnHeader key="owner" id="owner" onClick={() => handleSort('owner_name')}>Owner <ArrowUpDown className="inline h-3 w-3" /></DraggableColumnHeader>;
+                        case 'date': return <DraggableColumnHeader key="date" id="date" onClick={() => handleSort('created_at')}>Date {sortConfig?.key === 'created_at' ? <ArrowUpDown className="inline h-3 w-3 text-primary" /> : <ArrowUpDown className="inline h-3 w-3 opacity-30" />}</DraggableColumnHeader>;
+                        case 'folder': return <DraggableColumnHeader key="folder" id="folder">Folder</DraggableColumnHeader>;
+                        case 'tags': return <DraggableColumnHeader key="tags" id="tags">Tags</DraggableColumnHeader>;
+                        case 'score': return <DraggableColumnHeader key="score" id="score" onClick={() => handleSort('ai_score')}>Score <ArrowUpDown className="inline h-3 w-3" /></DraggableColumnHeader>;
+                        default: return null;
+                      }
+                    })}
+                  </TableRow>
+                </SortableContext>
+              </DndContext>
             </TableHeader>
             <TableBody>
               {groupBy ? (
@@ -1392,7 +1454,7 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
                     <>
                       <TableRow className="bg-muted/40 border-b-2">
                         <TableCell></TableCell>
-                        <TableCell colSpan={9} className="py-2">
+                        <TableCell colSpan={columnOrder.length} className="py-2">
                           <div className="flex items-center gap-2">
                             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => toggleGroupCollapse('unassigned')}>
                               {collapsedGroups.has('unassigned') ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -1417,11 +1479,36 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
                 </SortableContext>
               )}
               {filteredDocs.length === 0 && (
-                <TableRow><TableCell colSpan={9} className="h-32 text-center text-muted-foreground">No documents found.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={1 + columnOrder.length} className="h-32 text-center text-muted-foreground">No documents found.</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
         </Card>
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between px-2 py-3">
+            <span className="text-sm text-muted-foreground">
+              {totalCount} file{totalCount !== 1 ? 's' : ''} &mdash; page {currentPage} of {totalPages}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={currentPage <= 1}
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              >
+                Previous
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={currentPage >= totalPages}
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
         <DragOverlay>
           {activeDragId ? (() => {
             const isFolder = String(activeDragId).startsWith('folder-');
@@ -1690,6 +1777,38 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!pendingUploadFiles} onOpenChange={(open) => { if (!open) setPendingUploadFiles(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Confirm Upload</DialogTitle>
+            <DialogDescription>
+              {pendingUploadFiles?.files.length === 1
+                ? 'The following file will be uploaded:'
+                : `The following ${pendingUploadFiles?.files.length} files will be uploaded:`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2 max-h-60 overflow-y-auto space-y-1">
+            {pendingUploadFiles?.files.map((f, i) => (
+              <div key={i} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                <span className="truncate flex-1">{f.name}</span>
+                <span className="text-xs text-muted-foreground shrink-0">{(f.size / 1024).toFixed(0)} KB</span>
+              </div>
+            ))}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setPendingUploadFiles(null)}>Cancel</Button>
+            <Button onClick={async () => {
+              if (!pendingUploadFiles) return;
+              const { files, isPrivate, folderId } = pendingUploadFiles;
+              setPendingUploadFiles(null);
+              await uploadFiles(files, isPrivate, folderId);
+            }}>
+              Upload {pendingUploadFiles?.files.length === 1 ? 'File' : `${pendingUploadFiles?.files.length} Files`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1697,7 +1816,7 @@ export default function DashboardPage({ initialFavoritesOnly = false, initialAct
 function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggleGroupCollapse, addingSubfolderTo, setAddingSubfolderTo, subfolderName, setSubfolderName, handleCreateGroup, handleDeleteFolder, handleArchiveFolder, handleMoveFolder, handleRenameFolder, handleToggleFolderFavorite, countDocsInTree, selectAllInFolder, dragOverFolderId, showFavoritesOnly, isArchiveView, ...fileRowProps }: any) {
   const [isRenaming, setIsRenaming] = React.useState(false);
   const [renameValue, setRenameValue] = React.useState('');
-  const { flatFolders, selectedDocIds } = fileRowProps;
+  const { flatFolders, selectedDocIds, columnOrder = DEFAULT_COLUMN_ORDER } = fileRowProps;
   const collapseKey = `folder-${folder.id}`;
   const isCollapsed = collapsedGroups.has(collapseKey);
   const docs = docsByFolder[folder.id] || [];
@@ -1763,7 +1882,7 @@ function FolderTreeSection({ folder, depth, docsByFolder, collapsedGroups, toggl
             )}
           </div>
         </TableCell>
-        <TableCell colSpan={9} className="py-2">
+        <TableCell colSpan={columnOrder.length} className="py-2">
           <div className="flex items-center gap-2" style={{ paddingLeft: depth * 24 }}>
             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => toggleGroupCollapse(collapseKey)}>
               {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -1990,7 +2109,7 @@ function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedE
       </TableRow>
       {isExpanded && (
         <TableRow className="bg-indigo-500/5 hover:bg-indigo-500/5">
-          <TableCell colSpan={9} className="p-0">
+          <TableCell colSpan={1 + columnOrder.length} className="p-0">
             <div className="px-6 py-4 max-h-[500px] overflow-auto space-y-3">
               <AnalysisReport analysis={ca} combinedAnalysisId={record.id} />
             </div>
@@ -2001,7 +2120,24 @@ function CombinedAnalysisRow({ record, expandedCombinedAnalyses, toggleCombinedE
   );
 }
 
-function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, handleToggleFavorite, expandedNotes, toggleNotesExpanded, handleSaveNote, userCredits = 0, depth = 0, selectedDocIds, toggleDocSelection, handleDraftEmail, isDraftingEmail, draftEmailDocId }: any) {
+function DraggableColumnHeader({ id, children, className, onClick }: { id: string; children: React.ReactNode; className?: string; onClick?: () => void }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+  return (
+    <TableHead
+      ref={setNodeRef}
+      style={style}
+      className={cn(isDragging ? "opacity-40 bg-muted/50" : "cursor-grab hover:bg-muted/30 select-none", className)}
+      onClick={onClick}
+      {...attributes}
+      {...listeners}
+    >
+      {children}
+    </TableHead>
+  );
+}
+
+function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile, editingFileId, setEditingFileId, tempFileName, setTempFileName, handleRenameFile, handleAddTag, handleRemoveTag, flatFolders, handleMoveToFolder, handleAnalyze, isAnalyzing, selectedFile, rateLimitRemaining, expandedAnalysis, toggleAnalysisExpanded, teams, handleChangeTeam, handleTogglePrivate, handleToggleFavorite, expandedNotes, toggleNotesExpanded, handleSaveNote, userCredits = 0, depth = 0, selectedDocIds, toggleDocSelection, handleDraftEmail, isDraftingEmail, draftEmailDocId, columnOrder = DEFAULT_COLUMN_ORDER }: any) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: file.id });
   const [newTag, setNewTag] = useState("");
   const [noteText, setNoteText] = useState(file.notes || "");
@@ -2035,153 +2171,132 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
             </div>
           </div>
         </TableCell>
-        <TableCell className="font-medium">
-          <div className="flex items-center gap-2" style={{ paddingLeft: (depth + 1) * 24 }}>
-            {getFileIcon(file.file_type)}
-            {isEditing ? (
-              <Input value={tempFileName} onChange={(e) => setTempFileName(e.target.value)} className="h-7 w-32" autoFocus
-                onKeyDown={(e) => e.key === 'Enter' && handleRenameFile(file.id)} />
-            ) : (
-              <div className="flex flex-col">
-                <span className="cursor-pointer hover:underline" onClick={() => { setEditingFileId(file.id); setTempFileName(file.name); }}>
-                  {file.name}
-                </span>
-                {file.ai_analysis && (file.ai_analysis.addressNumber || file.ai_analysis.city || file.ai_analysis.county) && (
-                  <span className="text-[10px] text-muted-foreground leading-tight">
-                    {[
-                      [file.ai_analysis.addressNumber, file.ai_analysis.streetName, file.ai_analysis.suffix].filter(Boolean).join(' '),
-                      file.ai_analysis.city,
-                      file.ai_analysis.county,
-                    ].filter(Boolean).join(' · ')}
-                  </span>
-                )}
-              </div>
-            )}
-            {file.is_private && (
-              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 h-5 rounded-full border border-orange-400/40 bg-orange-500/10 text-orange-500">
-                <Lock className="h-2.5 w-2.5" />Private
-              </span>
-            )}
-            {hasAnalysis && (
-              <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] bg-green-500/10 text-green-600 hover:bg-green-500/20 border border-green-500/20 rounded-full"
-                onClick={() => toggleAnalysisExpanded(file.id)} data-testid={`toggle-analysis-${file.id}`}>
-                {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                <Sparkles className="h-3 w-3" />Analyzed
-              </Button>
-            )}
-            {file.notes && (
-              <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 border border-yellow-500/20 rounded-full"
-                onClick={() => toggleNotesExpanded(file.id)}>
-                <StickyNote className="h-3 w-3" />Note
-              </Button>
-            )}
-          </div>
-        </TableCell>
-        <TableCell>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" className={`h-8 w-8 ${isNotesExpanded ? 'text-yellow-500' : ''}`} onClick={() => toggleNotesExpanded(file.id)} title="Notes" data-testid={`button-notes-${file.id}`}>
-              <StickyNote className={`h-4 w-4 ${isNotesExpanded || file.notes ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground'}`} />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleToggleFavorite(file.id)} title={file.is_favorited ? 'Unfavorite' : 'Favorite'} data-testid={`button-favorite-${file.id}`}>
-              <Star className={`h-4 w-4 ${file.is_favorited ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground'}`} />
-            </Button>
-            <Button variant="ghost" size="sm" className={`h-8 gap-1 ${userCredits <= 0 ? 'text-muted-foreground' : 'text-primary'}`} onClick={() => handleAnalyze(file)} disabled={isAnalyzing || rateLimitRemaining <= 0 || userCredits <= 0} data-testid={`button-analyze-${file.id}`} title={userCredits <= 0 ? 'No credits remaining' : undefined}>
-              {isAnalyzing && selectedFile?.id === file.id ? (
-                <><RefreshCw className="h-4 w-4 animate-spin" /><span className="hidden md:inline">Analyzing...</span></>
-              ) : (
-                <><Sparkles className="h-4 w-4" /><span className="hidden md:inline">{hasAnalysis ? "Re-analyze" : "Analyze"}</span></>
-              )}
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => handleTogglePrivate(file.id, file.is_private)}>
-                  {file.is_private
-                    ? <><Users className="mr-2 h-4 w-4" />Share with team</>
-                    : <><EyeOff className="mr-2 h-4 w-4" />Hide from team</>}
-                </DropdownMenuItem>
-                {(() => {
-                  const availableTeams = user?.role === 'admin' ? teams : teams.filter((t: any) => t.id === user?.team);
-                  if (availableTeams.length === 0) return null;
-                  return (
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger>
-                        <Users className="mr-2 h-4 w-4" />Change Team
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent>
-                        {file.team !== null && (
-                          <DropdownMenuItem onClick={() => handleChangeTeam(file.id, null)}>No Team</DropdownMenuItem>
-                        )}
-                        {availableTeams.filter((t: any) => t.id !== file.team).map((t: any) => (
-                          <DropdownMenuItem key={t.id} onClick={() => handleChangeTeam(file.id, t.id)}>{t.name}</DropdownMenuItem>
-                        ))}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                  );
-                })()}
-                {user?.role === 'admin' && (
-                  <>
+        {columnOrder.map(colId => {
+          switch (colId) {
+            case 'name': return (
+              <TableCell key="name" className="font-medium">
+                <div className="flex items-center gap-2" style={{ paddingLeft: (depth + 1) * 24 }}>
+                  {getFileIcon(file.file_type)}
+                  {isEditing ? (
+                    <Input value={tempFileName} onChange={(e) => setTempFileName(e.target.value)} className="h-7 w-32" autoFocus
+                      onKeyDown={(e) => e.key === 'Enter' && handleRenameFile(file.id)} />
+                  ) : (
+                    <div className="flex flex-col">
+                      <span className="cursor-pointer hover:underline" onClick={() => { setEditingFileId(file.id); setTempFileName(file.name); }}>
+                        {file.name}
+                      </span>
+                      {file.ai_analysis && (file.ai_analysis.addressNumber || file.ai_analysis.city || file.ai_analysis.county) && (
+                        <span className="text-[10px] text-muted-foreground leading-tight">
+                          {[[file.ai_analysis.addressNumber, file.ai_analysis.streetName, file.ai_analysis.suffix].filter(Boolean).join(' '), file.ai_analysis.city, file.ai_analysis.county].filter(Boolean).join(' · ')}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {file.is_private && <span className="inline-flex items-center gap-1 text-[10px] px-1.5 h-5 rounded-full border border-orange-400/40 bg-orange-500/10 text-orange-500"><Lock className="h-2.5 w-2.5" />Private</span>}
+                  {hasAnalysis && (
+                    <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] bg-green-500/10 text-green-600 hover:bg-green-500/20 border border-green-500/20 rounded-full"
+                      onClick={() => toggleAnalysisExpanded(file.id)} data-testid={`toggle-analysis-${file.id}`}>
+                      {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                      <Sparkles className="h-3 w-3" />Analyzed
+                    </Button>
+                  )}
+                  {file.notes && (
+                    <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 border border-yellow-500/20 rounded-full"
+                      onClick={() => toggleNotesExpanded(file.id)}>
+                      <StickyNote className="h-3 w-3" />Note
+                    </Button>
+                  )}
+                </div>
+              </TableCell>
+            );
+            case 'actions': return (
+              <TableCell key="actions">
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="icon" className={`h-8 w-8 ${isNotesExpanded ? 'text-yellow-500' : ''}`} onClick={() => toggleNotesExpanded(file.id)} title="Notes" data-testid={`button-notes-${file.id}`}>
+                    <StickyNote className={`h-4 w-4 ${isNotesExpanded || file.notes ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground'}`} />
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleToggleFavorite(file.id)} title={file.is_favorited ? 'Unfavorite' : 'Favorite'} data-testid={`button-favorite-${file.id}`}>
+                    <Star className={`h-4 w-4 ${file.is_favorited ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground'}`} />
+                  </Button>
+                  <Button variant="ghost" size="sm" className={`h-8 gap-1 ${userCredits <= 0 ? 'text-muted-foreground' : 'text-primary'}`} onClick={() => handleAnalyze(file)} disabled={isAnalyzing || rateLimitRemaining <= 0 || userCredits <= 0} data-testid={`button-analyze-${file.id}`} title={userCredits <= 0 ? 'No credits remaining' : undefined}>
+                    {isAnalyzing && selectedFile?.id === file.id ? <><RefreshCw className="h-4 w-4 animate-spin" /><span className="hidden md:inline">Analyzing...</span></> : <><Sparkles className="h-4 w-4" /><span className="hidden md:inline">{hasAnalysis ? "Re-analyze" : "Analyze"}</span></>}
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => handleTogglePrivate(file.id, file.is_private)}>
+                        {file.is_private ? <><Users className="mr-2 h-4 w-4" />Share with team</> : <><EyeOff className="mr-2 h-4 w-4" />Hide from team</>}
+                      </DropdownMenuItem>
+                      {(() => {
+                        const availableTeams = user?.role === 'admin' ? teams : teams.filter((t: any) => t.id === user?.team);
+                        if (availableTeams.length === 0) return null;
+                        return (
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger><Users className="mr-2 h-4 w-4" />Change Team</DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent>
+                              {file.team !== null && <DropdownMenuItem onClick={() => handleChangeTeam(file.id, null)}>No Team</DropdownMenuItem>}
+                              {availableTeams.filter((t: any) => t.id !== file.team).map((t: any) => (
+                                <DropdownMenuItem key={t.id} onClick={() => handleChangeTeam(file.id, t.id)}>{t.name}</DropdownMenuItem>
+                              ))}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                        );
+                      })()}
+                      {user?.role === 'admin' && (<><DropdownMenuSeparator /><DropdownMenuItem onClick={() => openShareWithUser(file.id)}><UserPlus className="mr-2 h-4 w-4" />Share with user</DropdownMenuItem></>)}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem className="text-destructive" onClick={async () => { await apiFetch(`/api/documents/${file.id}/`, { method: 'DELETE' }); window.location.reload(); }}>Delete</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </TableCell>
+            );
+            case 'city': return <TableCell key="city" className="text-xs text-muted-foreground">{file.ai_analysis?.city || "--"}</TableCell>;
+            case 'county': return <TableCell key="county" className="text-xs text-muted-foreground">{file.ai_analysis?.county || "--"}</TableCell>;
+            case 'owner': return <TableCell key="owner" className="text-xs text-muted-foreground">{file.owner_name === user?.username ? "You" : file.owner_name}</TableCell>;
+            case 'date': return <TableCell key="date" className="text-xs text-muted-foreground whitespace-nowrap">{file.created_at ? new Date(file.created_at).toLocaleDateString() : '--'}</TableCell>;
+            case 'folder': return (
+              <TableCell key="folder">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild><Button variant="ghost" size="sm" className="h-6 text-xs">{file.folder_name || "None"}</Button></DropdownMenuTrigger>
+                  <DropdownMenuContent>
+                    <DropdownMenuLabel>Move to folder</DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => openShareWithUser(file.id)}>
-                      <UserPlus className="mr-2 h-4 w-4" />Share with user
-                    </DropdownMenuItem>
-                  </>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive" onClick={async () => {
-                  await apiFetch(`/api/documents/${file.id}/`, { method: 'DELETE' });
-                  window.location.reload();
-                }}>Delete</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </TableCell>
-        <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.city || "--"}</TableCell>
-        <TableCell className="text-xs text-muted-foreground">{file.ai_analysis?.county || "--"}</TableCell>
-        <TableCell className="text-xs text-muted-foreground">{file.owner_name === user?.username ? "You" : file.owner_name}</TableCell>
-        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-          {file.created_at ? new Date(file.created_at).toLocaleDateString() : '--'}
-        </TableCell>
-        <TableCell>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-6 text-xs">{file.folder_name || "None"}</Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-              <DropdownMenuLabel>Move to folder</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleMoveToFolder(file.id, null)}>None</DropdownMenuItem>
-              {flatFolders?.map((f: any) => (
-                <DropdownMenuItem key={f.id} onClick={() => handleMoveToFolder(file.id, f.id)}>
-                  <span style={{ paddingLeft: f.depth * 12 }}>{f.depth > 0 ? "└ " : ""}{f.name}</span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </TableCell>
-        <TableCell>
-          <div className="flex flex-wrap gap-1 items-center">
-            {(file.tags || []).map((t: any) => (
-              <Badge key={t.id || t.name} variant="secondary" className="text-[10px] gap-1 px-1.5 h-5">
-                {t.name}<X className="h-2 w-2 cursor-pointer" onClick={() => handleRemoveTag(file.id, t.name)} />
-              </Badge>
-            ))}
-            <div className="flex items-center gap-1">
-              <Input placeholder="Tag..." value={newTag} onChange={(e) => setNewTag(e.target.value)} className="h-5 w-16 text-[10px] px-1"
-                onKeyDown={(e) => { if (e.key === 'Enter') { handleAddTag(file.id, newTag); setNewTag(""); } }} />
-              <Tag className="h-3 w-3 text-muted-foreground" />
-            </div>
-          </div>
-        </TableCell>
-        <TableCell>
-          {file.ai_score ? <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px]">{file.ai_score}%</Badge> : "--"}
-        </TableCell>
+                    <DropdownMenuItem onClick={() => handleMoveToFolder(file.id, null)}>None</DropdownMenuItem>
+                    {flatFolders?.map((f: any) => (
+                      <DropdownMenuItem key={f.id} onClick={() => handleMoveToFolder(file.id, f.id)}>
+                        <span style={{ paddingLeft: f.depth * 12 }}>{f.depth > 0 ? "└ " : ""}{f.name}</span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </TableCell>
+            );
+            case 'tags': return (
+              <TableCell key="tags">
+                <div className="flex flex-wrap gap-1 items-center">
+                  {(file.tags || []).map((t: any) => (
+                    <Badge key={t.id || t.name} variant="secondary" className="text-[10px] gap-1 px-1.5 h-5">
+                      {t.name}<X className="h-2 w-2 cursor-pointer" onClick={() => handleRemoveTag(file.id, t.name)} />
+                    </Badge>
+                  ))}
+                  <div className="flex items-center gap-1">
+                    <Input placeholder="Tag..." value={newTag} onChange={(e) => setNewTag(e.target.value)} className="h-5 w-16 text-[10px] px-1"
+                      onKeyDown={(e) => { if (e.key === 'Enter') { handleAddTag(file.id, newTag); setNewTag(""); } }} />
+                    <Tag className="h-3 w-3 text-muted-foreground" />
+                  </div>
+                </div>
+              </TableCell>
+            );
+            case 'score': return <TableCell key="score">{file.ai_score ? <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px]">{file.ai_score}%</Badge> : "--"}</TableCell>;
+            default: return null;
+          }
+        })}
       </TableRow>
       {isExpanded && hasAnalysis && (
         <TableRow className={cn("bg-muted/30 hover:bg-muted/40", isNotesExpanded && "border-b-0")}>
-          <TableCell colSpan={9} className="p-0">
+          <TableCell colSpan={1 + columnOrder.length} className="p-0">
             <div className="px-6 py-4 max-h-[500px] overflow-auto">
               <AnalysisReport
                 analysis={file.ai_analysis}
@@ -2220,7 +2335,7 @@ function FileRow({ file, getFileIcon, user, decrementRateLimit, setSelectedFile,
       )}
       {isNotesExpanded && (
         <TableRow className="bg-yellow-500/5 hover:bg-yellow-500/10">
-          <TableCell colSpan={9} className="px-6 py-3">
+          <TableCell colSpan={1 + columnOrder.length} className="px-6 py-3">
             <div className="flex items-start gap-3">
               <StickyNote className="h-4 w-4 text-yellow-500 mt-2 shrink-0" />
               <div className="flex-1 space-y-2">
@@ -2809,12 +2924,17 @@ function AnalysisReport({ analysis, documentId, combinedAnalysisId, emailDraft, 
             <div className="p-3 space-y-4">
               {(["Plumbing", "Electrical", "PestControl", "RoofRepair"] as const).map(category => {
                 const businesses: any[] = localLeads[category] ?? [];
-                if (businesses.length === 0) return null;
+                const sectionKey = category === "PestControl" ? "Pest Inspection" : category === "RoofRepair" ? "Roof" : category;
+                const sectionData = summary[sectionKey];
+                const hasIssues = sectionData && Array.isArray(sectionData.issues) && sectionData.issues.length > 0;
+                if (businesses.length === 0 && !hasIssues) return null;
                 const label = category === "PestControl" ? "Pest Control" : category === "RoofRepair" ? "Roof Repair" : category;
                 return (
                   <div key={category}>
                     <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">{label}</p>
-                    <Table>
+                    {businesses.length === 0 ? (
+                      <p className="text-[10px] text-muted-foreground italic">No local contractors found for this category.</p>
+                    ) : <Table>
                       <TableHeader>
                         <TableRow className="text-[10px]">
                           <TableHead className="py-1 text-[10px]">Business</TableHead>
@@ -2853,7 +2973,7 @@ function AnalysisReport({ analysis, documentId, combinedAnalysisId, emailDraft, 
                           </TableRow>
                         ))}
                       </TableBody>
-                    </Table>
+                    </Table>}
                   </div>
                 );
               })}

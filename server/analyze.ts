@@ -100,7 +100,7 @@ function buildSystemPrompt(): string {
     "- age: A text string describing the known or estimated age (if available). " +
     "- end_of_life: A summary of whether the component is near or at the end of its life. " +
     "- recommendation: A short note on monitoring, repair, or replacement advice. Given the location, city/county, give a cost estimate for the replacement or repairs. " +
-    "If cost estimates are explicitly provided in the document for any section, always use those exact values and do not generate or infer new estimates. Only generate cost estimates when none are provided in the source document." +
+    "If cost estimates are explicitly provided in the document for any section, always use those exact values and do not generate or infer new estimates. Only generate cost estimates when none are provided in the source document for that section." +
     "If end of life is mentioned, it is important to flag it." +
     "For Permits: condition (optional), notes, recommendations. " +
     "For Pest, structure the data with the following keys: " +

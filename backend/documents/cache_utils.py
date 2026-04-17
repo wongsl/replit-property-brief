@@ -5,11 +5,13 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL = 300
 
-def _docs_key(user_id, scope, team_id=None, days=None):
+def _docs_key(user_id, scope, team_id=None, days=None, page=None, page_size=None):
     days_suffix = f':days{days}' if days else ''
+    page_suffix = f':p{page}' if page and page != 1 else ''
+    size_suffix = f':s{page_size}' if page_size and page_size != 20 else ''
     if scope == 'team' and team_id:
-        return f'docs:team:{team_id}{days_suffix}'
-    return f'docs:{user_id}:mine{days_suffix}'
+        return f'docs:team:{team_id}{days_suffix}{page_suffix}{size_suffix}'
+    return f'docs:{user_id}:mine{days_suffix}{page_suffix}{size_suffix}'
 
 def _folders_key(user_id, archived=False):
     return f'folders:{user_id}:{"archived" if archived else "active"}'

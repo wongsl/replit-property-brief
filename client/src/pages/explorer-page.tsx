@@ -63,8 +63,11 @@ export default function ExplorerPage() {
   const OWNERS_PER_PAGE = 5;
 
   useEffect(() => {
-    apiFetch('/api/documents/?scope=team').then(async (res) => {
-      if (res.ok) setDocuments(await res.json());
+    apiFetch('/api/documents/?scope=team&page_size=200').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        setDocuments(data.results ?? data);
+      }
     });
   }, []);
 

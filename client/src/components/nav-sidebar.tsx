@@ -126,10 +126,11 @@ function AppSidebar() {
   useEffect(() => {
     const dismissed = sessionStorage.getItem('tutorial_prompt_dismissed');
     if (dismissed) return;
-    fetch('/api/documents/?scope=team', { credentials: 'include' })
-      .then(res => res.ok ? res.json() : [])
-      .then((docs: any[]) => {
-        if (docs.length === 0) setShowTutorialPrompt(true);
+    fetch('/api/documents/?scope=team&page_size=1', { credentials: 'include' })
+      .then(res => res.ok ? res.json() : { count: 0 })
+      .then((data: any) => {
+        const count = typeof data.count === 'number' ? data.count : (data.results ?? data).length;
+        if (count === 0) setShowTutorialPrompt(true);
       })
       .catch(() => {});
   }, []);

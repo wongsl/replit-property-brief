@@ -405,13 +405,37 @@ class DocumentViewSet(viewsets.ModelViewSet):
         scope = request.query_params.get('scope', 'mine')
         team_id = getattr(request.user, 'team_id', None)
         days = request.query_params.get('days')
-        key = _docs_key(request.user.id, scope, team_id, days=days)
+        try:
+            page = int(request.query_params.get('page', 1))
+        except (ValueError, TypeError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get('page_size', 20))
+            page_size = max(1, min(page_size, 200))
+        except (ValueError, TypeError):
+            page_size = 20
+
+        key = _docs_key(request.user.id, scope, team_id, days=days, page=page, page_size=page_size)
         cached = get_cached(key)
         if cached:
             return Response(cached)
-        response = super().list(request, *args, **kwargs)
-        set_cached(key, response.data)
-        return response
+
+        qs = self.get_queryset().order_by('-created_at')
+        count = qs.count()
+        total_pages = max(1, (count + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * page_size
+        qs_page = qs[offset:offset + page_size]
+        serializer = self.get_serializer(qs_page, many=True)
+        data = {
+            'count': count,
+            'total_pages': total_pages,
+            'page': page,
+            'page_size': page_size,
+            'results': serializer.data,
+        }
+        set_cached(key, data)
+        return Response(data)
 
     def _detect_file_type(self, filename):
         ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
